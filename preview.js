@@ -144,16 +144,20 @@
       return [xs, ys];
     }
 
+    // Each chunk's tiles from pass 0, kept for pass 1's collision checks.
+    var chunkTiles = new Map();
     function terrain(cx, cy) {
       var p = positions(cx, cy), n = CHUNK * CHUNK;
       var r = tileProg.run(p[0], p[1]);
-      var px = new Uint8ClampedArray(n * 4);
+      var px = new Uint8ClampedArray(n * 4), ids = new Int16Array(n);
       for (var k = 0; k < n; k++) {
         var best = -Infinity, bi = -1;
         for (var t = 0; t < r.length; t++) if (r[t][k] > best) { best = r[t][k]; bi = t; }
+        ids[k] = bi;
         var c = bi >= 0 ? colors[bi] : [0, 0, 0];
         px[k * 4] = c[0]; px[k * 4 + 1] = c[1]; px[k * 4 + 2] = c[2]; px[k * 4 + 3] = 255;
       }
+      if (entProg || cliffs) chunkTiles.set(cx + ',' + cy, ids);
       return px;
     }
 
@@ -417,14 +421,35 @@
     // The tiles under and around a chunk, for collision masks. Entity boxes
     // can reach a couple of tiles into the next chunk.
     var B = 4, W = CHUNK + 2 * B;
+    // Ring positions (the border around a chunk), relative to its corner.
+    var ringX = [], ringY = [];
+    for (var rj = -B; rj < CHUNK + B; rj++) for (var ri = -B; ri < CHUNK + B; ri++) {
+      if (ri >= 0 && ri < CHUNK && rj >= 0 && rj < CHUNK) continue;
+      ringX.push(ri); ringY.push(rj);
+    }
+    function argmax(r, k) {
+      var best = -Infinity, bi = 0;
+      for (var t = 0; t < r.length; t++) if (r[t][k] > best) { best = r[t][k]; bi = t; }
+      return bi;
+    }
     function tileLayers(cx, cy) {
-      var xs = new Float32Array(W * W), ys = new Float32Array(W * W);
-      for (var j = 0; j < W; j++) for (var i = 0; i < W; i++) { xs[j * W + i] = cx * CHUNK + i - B; ys[j * W + i] = cy * CHUNK + j - B; }
-      var r = tileProg.run(xs, ys), id = new Int16Array(W * W);
-      for (var k = 0; k < W * W; k++) {
-        var best = -Infinity, bi = 0;
-        for (var t = 0; t < r.length; t++) if (r[t][k] > best) { best = r[t][k]; bi = t; }
-        id[k] = bi;
+      var id = new Int16Array(W * W), key = cx + ',' + cy, inner = chunkTiles.get(key), k, r;
+      if (inner) {
+        // The chunk itself from pass 0; only the ring around it is new.
+        chunkTiles.delete(key);
+        var m = ringX.length, xs = new Float32Array(m), ys = new Float32Array(m);
+        for (k = 0; k < m; k++) { xs[k] = cx * CHUNK + ringX[k]; ys[k] = cy * CHUNK + ringY[k]; }
+        r = tileProg.run(xs, ys);
+        for (k = 0; k < m; k++) id[(ringY[k] + B) * W + ringX[k] + B] = argmax(r, k);
+        for (var j = 0; j < CHUNK; j++) for (var i = 0; i < CHUNK; i++) {
+          var t = inner[j * CHUNK + i];
+          id[(j + B) * W + i + B] = t < 0 ? 0 : t;
+        }
+      } else {
+        xs = new Float32Array(W * W); ys = new Float32Array(W * W);
+        for (j = 0; j < W; j++) for (i = 0; i < W; i++) { xs[j * W + i] = cx * CHUNK + i - B; ys[j * W + i] = cy * CHUNK + j - B; }
+        r = tileProg.run(xs, ys);
+        for (k = 0; k < W * W; k++) id[k] = argmax(r, k);
       }
       var at = function (tx, ty) {
         var i = tx - cx * CHUNK + B, j = ty - cy * CHUNK + B;

@@ -98,19 +98,20 @@
     for (var i = 0; i < n; i++) {
       var x = (xs[i] + ox) * scale + lx, y = ys[i] * scale;
       var x0 = Math.floor(x), y0 = Math.floor(y);
-      var fx = x - x0, fy = y - y0;
-      var tot = 0;
-      for (var dx = 0; dx < 2; dx++) {
-        var hx = T2[(x0 + dx) & 255];
-        var ddx = fx - dx;
-        for (var dy = 0; dy < 2; dy++) {
-          var ddy = fy - dy;
-          var q = 1 - ddx * ddx - ddy * ddy;
-          if (q <= 0) continue;
-          var k = T3[hx ^ T1[(y0 + dy) & 255] ^ s];
-          tot += (GX[k] * ddx + GY[k] * ddy) * q * q * q;
-        }
-      }
+      var fx = x - x0, fy = y - y0, gx = fx - 1, gy = fy - 1;
+      var h0 = T2[x0 & 255], h1 = T2[(x0 + 1) & 255];
+      var v0 = T1[y0 & 255] ^ s, v1 = T1[(y0 + 1) & 255] ^ s;
+      // The four lattice corners, (0,0) (0,1) (1,0) (1,1), each inside
+      // radius 1 adding (g . d)(1 - |d|^2)^3.
+      var tot = 0, q, k;
+      q = 1 - fx * fx - fy * fy;
+      if (q > 0) { k = T3[h0 ^ v0]; tot += (GX[k] * fx + GY[k] * fy) * q * q * q; }
+      q = 1 - fx * fx - gy * gy;
+      if (q > 0) { k = T3[h0 ^ v1]; tot += (GX[k] * fx + GY[k] * gy) * q * q * q; }
+      q = 1 - gx * gx - fy * fy;
+      if (q > 0) { k = T3[h1 ^ v0]; tot += (GX[k] * gx + GY[k] * fy) * q * q * q; }
+      q = 1 - gx * gx - gy * gy;
+      if (q > 0) { k = T3[h1 ^ v1]; tot += (GX[k] * gx + GY[k] * gy) * q * q * q; }
       out[i] += tot * (scalarAmp ? amp : amp[i]);
     }
   }
@@ -853,25 +854,122 @@
     var x1 = (dx + dy) / 2, x2 = (dx - dy) / 2, far = 1e9;
     return Math.min(segDist(px, py, x1, 0, x2, dy), segDist(px, py, x1, 0, x1, -far), segDist(px, py, x2, dy, x2, far));
   }
-  function evalVoronoi(nd, a, n, alloc) {
+  // The cells a batch can reach, laid out in typed arrays: cell (k, j) of
+  // the box at index (j - y0) * w + (k - x0).
+  function voronoiGrid(e, x0, y0, w, h) {
+    var m = w * h, px = new Float32Array(m), py = new Float32Array(m), id = new Float32Array(m);
+    for (var j = 0; j < h; j++) for (var k = 0; k < w; k++) {
+      var c = voronoiCell(e.seed, x0 + k, y0 + j, e.jitter), at = j * w + k;
+      px[at] = fr(x0 + k + c[0]); py[at] = fr(y0 + j + c[1]); id[at] = c[2];
+    }
+    return { x0: x0, y0: y0, w: w, h: h, px: px, py: py, id: id };
+  }
+  function evalVoronoi(nd, a, n, alloc, b, memo) {
     var e = nd.extra, out = alloc();
     var xs = arr(a[0], n), ys = arr(a[1], n);
-    var dist = VORONOI_DIST[e.type], g = e.grid, J = e.jitter, cache = nd.cache || (nd.cache = new Map());
+    var dist = VORONOI_DIST[e.type], g = e.grid;
+    var pyramid = e.mode === 'pyramid', euclid = e.type === 'euclidean', cheb = e.type === 'chebyshev';
+    // Manhattan and chebyshev pyramids look two cells out: with full jitter
+    // a cell edge can come from there (as the game does).
+    var R = pyramid && !euclid ? 2 : 1, side = 2 * R + 1;
+    var qx = new Float32Array(n), qy = new Float32Array(n);
+    var lx = Infinity, ly = Infinity, hx = -Infinity, hy = -Infinity;
+    for (var i = 0; i < n; i++) {
+      var u = fr(xs[i] / g), v = fr(ys[i] / g);
+      qx[i] = u; qy[i] = v;
+      if (u < lx) lx = u; if (u > hx) hx = u; if (v < ly) ly = v; if (v > hy) hy = v;
+    }
+    if (!n || !(hx - lx < 4096 && hy - ly < 4096)) return evalVoronoiScattered(nd, qx, qy, n, out, R);
+    var x0 = Math.floor(lx) - R, y0 = Math.floor(ly) - R;
+    // Nodes over the same points, cells and metric (cell_id and facet, say)
+    // share the nearest-point search.
+    var key = memo && [nd.args[0], nd.args[1], e.seed, g, e.jitter, e.type, R].join('|');
+    var S = key && memo.get(key);
+    if (!S) {
+      S = { d1: new Float64Array(n), d2: new Float64Array(n), best: new Int32Array(n),
+        G: voronoiGrid(e, x0, y0, Math.floor(hx) + R - x0 + 1, Math.floor(hy) + R - y0 + 1) };
+      var Gs = S.G;
+      for (i = 0; i < n; i++) {
+        var sx = qx[i], sy = qy[i], scx = Math.floor(sx), scy = Math.floor(sy);
+        var e1 = Infinity, e2 = Infinity, b1 = -1;
+        for (var sj = scy - R; sj <= scy + R; sj++) {
+          var srow = (sj - y0) * Gs.w - x0;
+          for (var sk = scx - R; sk <= scx + R; sk++) {
+            var sat = srow + sk, sd = dist(fr(sx - Gs.px[sat]), fr(sy - Gs.py[sat]));
+            if (sd < e1) { e2 = e1; e1 = sd; b1 = sat; } else if (sd < e2) e2 = sd;
+          }
+        }
+        S.d1[i] = e1; S.d2[i] = e2; S.best[i] = b1;
+      }
+      if (key) memo.set(key, S);
+    }
+    var G = S.G, gx = G.px, gy = G.py, gid = G.id, gw = G.w;
+    if (e.mode === 'cell_id') { for (i = 0; i < n; i++) out[i] = gid[S.best[i]]; return out; }
+    if (e.mode === 'spot') { for (i = 0; i < n; i++) out[i] = S.d1[i]; return out; }
+    if (e.mode === 'facet') { for (i = 0; i < n; i++) out[i] = fr(S.d2[i] - S.d1[i]); return out; }
+    var cand = new Int32Array(side * side), bound = new Float64Array(side * side), done = new Uint8Array(side * side);
+    for (i = 0; i < n; i++) {
+      var x = qx[i], y = qy[i], cx = Math.floor(x), cy = Math.floor(y), best1 = S.best[i], nc = 0;
+      for (var j = cy - R; j <= cy + R; j++) {
+        var row = (j - y0) * gw - x0;
+        for (var k = cx - R; k <= cx + R; k++) cand[nc++] = row + k;
+      }
+      var ax = gx[best1], ay = gy[best1], best = Infinity, c;
+      if (euclid) {
+        for (c = 0; c < nc; c++) {
+          var bx = gx[cand[c]], by = gy[cand[c]];
+          if (bx === ax && by === ay) continue;
+          var l = Math.hypot(bx - ax, by - ay);
+          var val = ((x - bx) * (x - bx) + (y - by) * (y - by) - (x - ax) * (x - ax) - (y - ay) * (y - ay)) / (2 * l);
+          if (val < best) best = val;
+        }
+        out[i] = best;
+        continue;
+      }
+      // Manhattan (or chebyshev, which is manhattan turned 45 degrees and
+      // scaled by 0.75, as the game does). The distance to the bisector of
+      // a and b is at least (|q - b|1 - |q - a|1) / (2 sqrt 2), so take the
+      // candidates nearest first and stop once that bound can't win.
+      var tx = cheb ? 0.75 * (x + y) : x, ty = cheb ? 0.75 * (x - y) : y;
+      var tax = cheb ? 0.75 * (ax + ay) : ax, tay = cheb ? 0.75 * (ax - ay) : ay;
+      var la = Math.abs(tx - tax) + Math.abs(ty - tay);
+      for (c = 0; c < nc; c++) {
+        var cbx = gx[cand[c]], cby = gy[cand[c]];
+        var tbx = cheb ? 0.75 * (cbx + cby) : cbx, tby = cheb ? 0.75 * (cbx - cby) : cby;
+        bound[c] = (Math.abs(tx - tbx) + Math.abs(ty - tby) - la) * 0.35355339059327373 * (1 - 1e-9);
+        done[c] = (cbx === ax && cby === ay) ? 1 : 0;
+      }
+      for (;;) {
+        var pick = -1, pb = Infinity;
+        for (c = 0; c < nc; c++) if (!done[c] && bound[c] < pb) { pb = bound[c]; pick = c; }
+        if (pick < 0 || !(pb < best)) break;
+        done[pick] = 1;
+        var qbx = gx[cand[pick]], qby = gy[cand[pick]];
+        var vv = cheb
+          ? l1BisectorDistance(tx, ty, tax, tay, 0.75 * (qbx + qby), 0.75 * (qbx - qby))
+          : l1BisectorDistance(x, y, ax, ay, qbx, qby);
+        if (vv < best) best = vv;
+      }
+      out[i] = best;
+    }
+    return out;
+  }
+  // The same for points spread too far apart to lay their cells out: cell
+  // points cached by key.
+  function evalVoronoiScattered(nd, qx, qy, n, out, R) {
+    var e = nd.extra, dist = VORONOI_DIST[e.type], cache = nd.cache || (nd.cache = new Map());
     var cellAt = function (cx, cy) {
       var key = cx + ',' + cy, c = cache.get(key);
-      if (!c) { c = voronoiCell(e.seed, cx, cy, J); if (cache.size > 65536) cache.clear(); cache.set(key, c); }
+      if (!c) { c = voronoiCell(e.seed, cx, cy, e.jitter); if (cache.size > 65536) cache.clear(); cache.set(key, c); }
       return c;
     };
     for (var i = 0; i < n; i++) {
-      var qx = fr(xs[i] / g), qy = fr(ys[i] / g), cx = Math.floor(qx), cy = Math.floor(qy);
+      var x = qx[i], y = qy[i], cx = Math.floor(x), cy = Math.floor(y);
       var d1 = Infinity, d2 = Infinity, id = 0, ax = 0, ay = 0, pts = [];
-      // Manhattan and chebyshev pyramids look two cells out: with full jitter
-      // a cell edge can come from there (as the game does).
-      var R = e.mode === 'pyramid' && e.type !== 'euclidean' ? 2 : 1;
       for (var j = cy - R; j <= cy + R; j++) for (var k = cx - R; k <= cx + R; k++) {
         var c = cellAt(k, j), px = fr(k + c[0]), py = fr(j + c[1]);
-        var d = dist(fr(qx - px), fr(qy - py));
-        if (e.mode === 'pyramid') pts.push(px, py);
+        var d = dist(fr(x - px), fr(y - py));
+        pts.push(px, py);
         if (d < d1) { d2 = d1; d1 = d; id = c[2]; ax = px; ay = py; } else if (d < d2) d2 = d;
       }
       if (e.mode === 'cell_id') out[i] = id;
@@ -885,12 +983,11 @@
           var v;
           if (e.type === 'euclidean') {
             var l = Math.hypot(bx - ax, by - ay);
-            v = ((qx - bx) * (qx - bx) + (qy - by) * (qy - by) - (qx - ax) * (qx - ax) - (qy - ay) * (qy - ay)) / (2 * l);
+            v = ((x - bx) * (x - bx) + (y - by) * (y - by) - (x - ax) * (x - ax) - (y - ay) * (y - ay)) / (2 * l);
           } else if (e.type === 'manhattan') {
-            v = l1BisectorDistance(qx, qy, ax, ay, bx, by);
+            v = l1BisectorDistance(x, y, ax, ay, bx, by);
           } else {
-            // Chebyshev is manhattan turned 45 degrees (the game scales by 0.75).
-            v = l1BisectorDistance(0.75 * (qx + qy), 0.75 * (qx - qy), 0.75 * (ax + ay), 0.75 * (ax - ay), 0.75 * (bx + by), 0.75 * (bx - by));
+            v = l1BisectorDistance(0.75 * (x + y), 0.75 * (x - y), 0.75 * (ax + ay), 0.75 * (ax - ay), 0.75 * (bx + by), 0.75 * (bx - by));
           }
           if (v < best) best = v;
         }
@@ -938,64 +1035,234 @@
   }
 
   Program.prototype.run = function (xs, ys) {
-    var n = xs.length, nodes = this.nodes, vals = new Array(nodes.length), pool = [];
+    var n = xs.length, nodes = this.nodes, order = this.order, last = this.last;
+    // Buffers come back to the pool when their last reader is done. The
+    // previous run's outputs go back too: they are only good until the
+    // next run.
+    if (this.poolN !== n) { this.pool = []; this.poolN = n; this.prev = null; }
+    var pool = this.pool;
+    if (this.prev) for (var p = 0; p < this.prev.length; p++) if (this.prev[p]) pool.push(this.prev[p]);
     var alloc = function () { return pool.length ? pool.pop() : new Float32Array(n); };
-    for (var at = 0; at < this.order.length; at++) {
-      var id = this.order[at], nd = nodes[id];
-      var v;
+    var vals = this.vals || (this.vals = new Array(nodes.length));
+    // Work that several nodes of this run can share (see evalVoronoi).
+    var memo = new Map();
+    var argv = this.argv || (this.argv = order.map(function (id) { return new Array(nodes[id].args.length); }));
+    for (var at = 0; at < order.length; at++) {
+      var id = order[at], nd = nodes[id], args = nd.args, v;
       if (nd.op === 'const') v = nd.value;
       else if (nd.op === 'x') { v = alloc(); v.set(xs); }
       else if (nd.op === 'y') { v = alloc(); v.set(ys); }
-      else v = EVAL[nd.op](nd, nd.args.map(function (x) { return vals[x]; }), n, alloc, this.b);
+      else {
+        var av = argv[at];
+        for (var j = 0; j < args.length; j++) av[j] = vals[args[j]];
+        v = EVAL[nd.op](nd, av, n, alloc, this.b, memo);
+      }
       vals[id] = v;
-      for (var j = 0; j < nd.args.length; j++) {
-        var a = nd.args[j];
-        if (this.last[a] === at && vals[a] && typeof vals[a] !== 'number') { pool.push(vals[a]); vals[a] = undefined; }
+      for (j = 0; j < args.length; j++) {
+        var a = args[j];
+        if (last[a] === at && vals[a] && typeof vals[a] !== 'number') { pool.push(vals[a]); vals[a] = undefined; }
       }
     }
-    return this.outputs.map(function (o) {
-      var v = vals[o];
-      if (typeof v === 'number') { var f = new Float32Array(n); f.fill(v); return f; }
-      return v;
-    });
+    var outs = this.outputs, res = new Array(outs.length), seen = new Set();
+    this.prev = new Array(outs.length);
+    for (var o = 0; o < outs.length; o++) {
+      v = vals[outs[o]];
+      if (typeof v === 'number') { var f = alloc(); f.fill(v); v = f; }
+      else if (seen.has(v)) { v = v.slice(); }
+      seen.add(v);
+      res[o] = v;
+      this.prev[o] = v;
+    }
+    for (o = 0; o < outs.length; o++) vals[outs[o]] = undefined;
+    return res;
   };
-
-  function elementwise(f) {
-    return function (nd, args, n, alloc) {
-      var out = alloc();
-      var k = args.length;
-      if (k === 1) {
-        var a = args[0];
-        for (var i = 0; i < n; i++) out[i] = f(a[i]);
-      } else if (k === 2) {
-        var a0 = args[0], a1 = args[1];
-        var c0 = typeof a0 === 'number', c1 = typeof a1 === 'number';
-        for (i = 0; i < n; i++) out[i] = f(c0 ? a0 : a0[i], c1 ? a1 : a1[i]);
-      } else {
-        for (i = 0; i < n; i++) {
-          var vs = args.map(function (a) { return typeof a === 'number' ? a : a[i]; });
-          out[i] = f.apply(null, vs);
-        }
-      }
-      return out;
-    };
-  }
 
   var EVAL = {};
-  Object.keys(FOLD).forEach(function (op) { EVAL[op] = elementwise(FOLD[op]); });
-  // Hot paths without the closure call.
-  EVAL.add = function (nd, a, n, alloc) {
-    var o = alloc(), x = a[0], y = a[1];
-    if (typeof x === 'number') for (var i = 0; i < n; i++) o[i] = x + y[i];
-    else if (typeof y === 'number') for (i = 0; i < n; i++) o[i] = x[i] + y;
-    else for (i = 0; i < n; i++) o[i] = x[i] + y[i];
+  // Element-wise ops, one loop per operand shape (generated; see FOLD for
+  // the same ops on constants).
+  EVAL.add = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = a + b; } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = a + b; } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = a + b; }
     return o;
   };
-  EVAL.mul = function (nd, a, n, alloc) {
-    var o = alloc(), x = a[0], y = a[1];
-    if (typeof x === 'number') for (var i = 0; i < n; i++) o[i] = x * y[i];
-    else if (typeof y === 'number') for (i = 0; i < n; i++) o[i] = x[i] * y;
-    else for (i = 0; i < n; i++) o[i] = x[i] * y[i];
+  EVAL.sub = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = a - b; } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = a - b; } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = a - b; }
+    return o;
+  };
+  EVAL.mul = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = a * b; } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = a * b; } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = a * b; }
+    return o;
+  };
+  EVAL.div = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = a / b; } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = a / b; } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = a / b; }
+    return o;
+  };
+  EVAL.mod = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = a - Math.floor(a / b) * b; } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = a - Math.floor(a / b) * b; } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = a - Math.floor(a / b) * b; }
+    return o;
+  };
+  EVAL.pow = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = gamePow(a, b); } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = gamePow(a, b); } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = gamePow(a, b); }
+    return o;
+  };
+  EVAL.lt = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = a < b ? 1 : 0; } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = a < b ? 1 : 0; } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = a < b ? 1 : 0; }
+    return o;
+  };
+  EVAL.le = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = a <= b ? 1 : 0; } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = a <= b ? 1 : 0; } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = a <= b ? 1 : 0; }
+    return o;
+  };
+  EVAL.gt = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = a > b ? 1 : 0; } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = a > b ? 1 : 0; } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = a > b ? 1 : 0; }
+    return o;
+  };
+  EVAL.ge = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = a >= b ? 1 : 0; } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = a >= b ? 1 : 0; } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = a >= b ? 1 : 0; }
+    return o;
+  };
+  EVAL.eq = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = a === b ? 1 : 0; } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = a === b ? 1 : 0; } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = a === b ? 1 : 0; }
+    return o;
+  };
+  EVAL.ne = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = a !== b ? 1 : 0; } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = a !== b ? 1 : 0; } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = a !== b ? 1 : 0; }
+    return o;
+  };
+  EVAL.band = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = toInt(a) & toInt(b); } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = toInt(a) & toInt(b); } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = toInt(a) & toInt(b); }
+    return o;
+  };
+  EVAL.bor = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = toInt(a) | toInt(b); } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = toInt(a) | toInt(b); } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = toInt(a) | toInt(b); }
+    return o;
+  };
+  EVAL.bxor = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = toInt(a) ^ toInt(b); } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = toInt(a) ^ toInt(b); } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = toInt(a) ^ toInt(b); }
+    return o;
+  };
+  EVAL.min = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = Math.min(a, b); } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = Math.min(a, b); } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = Math.min(a, b); }
+    return o;
+  };
+  EVAL.max = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = Math.max(a, b); } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = Math.max(a, b); } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = Math.max(a, b); }
+    return o;
+  };
+  EVAL.atan2 = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], y = v[1], i, a, b;
+    if (typeof x === 'number') { a = x; for (i = 0; i < n; i++) { b = y[i]; o[i] = Math.atan2(a, b); } }
+    else if (typeof y === 'number') { b = y; for (i = 0; i < n; i++) { a = x[i]; o[i] = Math.atan2(a, b); } }
+    else for (i = 0; i < n; i++) { a = x[i]; b = y[i]; o[i] = Math.atan2(a, b); }
+    return o;
+  };
+  EVAL.neg = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], a;
+    for (var i = 0; i < n; i++) { a = x[i]; o[i] = -a; }
+    return o;
+  };
+  EVAL.abs = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], a;
+    for (var i = 0; i < n; i++) { a = x[i]; o[i] = Math.abs(a); }
+    return o;
+  };
+  EVAL.sqrt = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], a;
+    for (var i = 0; i < n; i++) { a = x[i]; o[i] = Math.sqrt(a); }
+    return o;
+  };
+  EVAL.sin = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], a;
+    for (var i = 0; i < n; i++) { a = x[i]; o[i] = gameSin(a); }
+    return o;
+  };
+  EVAL.cos = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], a;
+    for (var i = 0; i < n; i++) { a = x[i]; o[i] = gameCos(a); }
+    return o;
+  };
+  EVAL.floor = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], a;
+    for (var i = 0; i < n; i++) { a = x[i]; o[i] = Math.floor(a); }
+    return o;
+  };
+  EVAL.ceil = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], a;
+    for (var i = 0; i < n; i++) { a = x[i]; o[i] = Math.ceil(a); }
+    return o;
+  };
+  EVAL.log2 = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], a;
+    for (var i = 0; i < n; i++) { a = x[i]; o[i] = Math.log2(a); }
+    return o;
+  };
+  EVAL.bnot = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], a;
+    for (var i = 0; i < n; i++) { a = x[i]; o[i] = ~toInt(a); }
+    return o;
+  };
+
+  EVAL.clamp = function (nd, v, n, alloc) {
+    var o = alloc(), x = v[0], lo = v[1], hi = v[2], i, a;
+    if (typeof lo === 'number' && typeof hi === 'number') {
+      for (i = 0; i < n; i++) { a = x[i]; o[i] = a < lo ? lo : a > hi ? hi : a; }
+    } else {
+      for (i = 0; i < n; i++) {
+        a = typeof x === 'number' ? x : x[i];
+        var l = typeof lo === 'number' ? lo : lo[i], h = typeof hi === 'number' ? hi : hi[i];
+        o[i] = a < l ? l : a > h ? h : a;
+      }
+    }
     return o;
   };
   var arr = function (v, n) { if (typeof v !== 'number') return v; var f = new Float32Array(n); f.fill(v); return f; };

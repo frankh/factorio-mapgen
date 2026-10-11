@@ -109,10 +109,23 @@ share of pixels that match exactly:
 
 | Nauvis | Vulcanus | Gleba | Fulgora | Aquilo |
 | --- | --- | --- | --- | --- |
-| 99.9% | 99.3% | 99.7% | 99.8% | 99.97% |
+| 99.9% | 99.4% | 99.7% | 99.8% | 99.97% |
 
 Terrain is exact; what differs is mostly a few cliffs and entities where the
 noise is off in its last bits.
+
+### Speed
+
+Rendering a 512x512 view on one core takes 1 to 6 seconds depending on the
+planet (Aquilo quickest, Fulgora slowest); the page spreads chunks over up
+to six workers. Where the time goes: basis noise, then Voronoi cells. The
+evaluator runs each node over a whole chunk at once, with a typed loop per
+operator, buffers reused between nodes and runs, and nodes that ask for the
+same nearest-cell search sharing it. Pass 1 reuses pass 0's tiles and only
+works out the ring of tiles around the chunk that collision checks reach
+into. The site's CSP rules out generated code (`new Function`), and
+WebAssembly would need `'wasm-unsafe-eval'` added to it for what is left
+(mostly the basis noise loop), so it is plain JavaScript.
 
 ### How the game does it
 
