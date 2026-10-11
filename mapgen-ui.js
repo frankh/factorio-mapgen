@@ -503,10 +503,7 @@
         ctx.putImageData(new ImageData(new Uint8ClampedArray(m.pixels.buffer), m.w, m.h), half + m.cx * 32, half + m.cy * 32);
       } else if (m.type === 'error') {
         this.previewWorkers.forEach((w) => w.postMessage({ type: 'stop', job: m.job }));
-        // Something this page can't compute yet (e.g. a planet using noise
-        // functions not reproduced here): ask the server, which runs the game.
-        if (this.opts.previewUrl) this.serverPreview(m.job, m.message);
-        else this.previewFailed(m.message);
+        this.previewFailed(m.message);
       }
     }
 
@@ -514,20 +511,6 @@
       this.previewState.error = message;
       this.previewState.key = '';
       this.updatePreviewView();
-    }
-
-    serverPreview(job, why) {
-      const headers = { 'Content-Type': 'application/json' };
-      if (this.opts.csrf) headers['X-CSRF-Token'] = this.opts.csrf;
-      const body = JSON.stringify({ map_gen_settings: this.result().mapGenSettings, space_age: this.modset === 'space-age', planet: this.previewPlanet || 'nauvis', size: PREVIEW_SIZE });
-      fetch(this.opts.previewUrl, { method: 'POST', headers, body, credentials: 'same-origin' })
-        .then((r) => (r.ok ? r.blob() : r.text().then((t) => { throw new Error(t.trim()); })))
-        .then((blob) => createImageBitmap(blob))
-        .then((img) => {
-          if (job !== this.previewJob) return;
-          this.previewCanvas.getContext('2d').drawImage(img, 0, 0, PREVIEW_SIZE, PREVIEW_SIZE);
-        })
-        .catch((e) => { if (job === this.previewJob) this.previewFailed(e.message || why); });
     }
 
     // Swap just the preview pane, so typing and dragging aren't disturbed.
