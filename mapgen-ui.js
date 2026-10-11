@@ -241,9 +241,11 @@
       const md = this.modsetData;
       const modified = this.modifiedOptions();
 
-      const presetSelect = el('select', {
-        'aria-label': 'Preset', onchange: (e) => { this.loadPreset(e.target.value); this.render(); },
-      }, md.presets.map((p) => el('option', { value: p.name, selected: p.name === this.presetName }, p.label + (p.name === this.presetName && modified.length ? ' ' + this.t('gui-map-generator', 'custom') : ''))));
+      const presetSelect = this.dropdown({
+        label: 'Preset', width: 232, value: this.presetName,
+        options: md.presets.map((p) => ({ value: p.name, text: p.label + (p.name === this.presetName && modified.length ? ' ' + this.t('gui-map-generator', 'custom') : '') })),
+        onChange: (v) => { this.loadPreset(v); this.render(); },
+      });
       const resetBtn = el('button', {
         class: 'fmg-btn fmg-reset', type: 'button', disabled: !modified.length,
         onclick: () => { this.loadPreset(this.presetName); this.render(); },
@@ -280,7 +282,7 @@
       const canPreview = !!this.opts.previewUrl;
       const previewBtn = this.previewOpen
         ? el('button', { class: 'fmg-dialog-btn fmg-back fmg-close-preview', type: 'button', onclick: () => { this.previewOpen = false; this.render(); } },
-          this.t('gui-map-generator', 'hide-preview'))
+          glyph('close'), this.t('gui-map-generator', 'hide-preview'))
         : el('button', { class: 'fmg-dialog-btn fmg-forward', type: 'button', disabled: !canPreview, onclick: () => { this.previewOpen = true; this.render(); } },
           glyph('warning'), this.t('gui-map-generator', 'show-preview'));
       if (!this.previewOpen) this.tip(previewBtn, () => this.t('gui-map-generator', 'show-preview-warning'));
@@ -289,7 +291,7 @@
         el('div', { class: 'fmg-titlebar' }, el('div', { class: 'fmg-title' }, this.t('gui-map-generator', 'title')), el('div', { class: 'fmg-drag' })),
         el('div', { class: 'fmg-body' }, el('div', { class: 'fmg-deep fmg-main' },
           el('div', { class: 'fmg-subheader' },
-            el('div', { class: 'fmg-dropdown', style: { width: '232px' } }, presetSelect), resetWrap,
+            presetSelect, resetWrap,
             el('div', { class: 'fmg-spacer' }),
             el('span', { class: 'fmg-label-bold fmg-seed-label' }, this.t('gui-map-generator', 'map-seed')), seedInput, shuffle),
           el('div', { class: 'fmg-desc' }, preset ? preset.description : ''),
@@ -300,16 +302,75 @@
           this.panel,
           el('div', { class: 'fmg-exchange' }, el('span', { class: 'fmg-label-bold' }, this.t('gui', 'map-exchange-string')), importBtn, exportBtn)),
         this.previewOpen ? this.renderPreview() : null),
-        el('div', { class: 'fmg-footer' },
-          el('button', { class: 'fmg-dialog-btn fmg-back', type: 'button', onclick: () => this.opts.onBack && this.opts.onBack() }, this.t('gui', 'cancel')),
-          el('div', { class: 'fmg-drag' }),
-          this.opts.onModSettings ? el('button', { class: 'fmg-dialog-btn', type: 'button', onclick: () => this.opts.onModSettings() }, this.t('gui-menu', 'mod-settings')) : null,
-          previewBtn,
-          el('button', { class: 'fmg-dialog-btn fmg-confirm', type: 'button', onclick: () => this.play() }, this.opts.playLabel || this.t('gui-map-generator', 'play'))));
+        this.renderFooter(previewBtn));
+      this.root.classList.toggle('fmg-previewing', !!this.previewOpen);
       this.root.append(win);
       this.panel.scrollTop = keepScroll;
       if (this.previewOpen) this.schedulePreview();
       if (this.opts.onChange) this.opts.onChange(this);
+    }
+
+    // Back … Preview, Play; with the preview open the game splits the bar
+    // under its two columns: Back on the left, Close preview and a wide Play
+    // under the map.
+    renderFooter(previewBtn) {
+      const back = el('button', { class: 'fmg-dialog-btn fmg-back', type: 'button', onclick: () => this.opts.onBack && this.opts.onBack() }, this.t('gui', 'cancel'));
+      const mods = this.opts.onModSettings ? el('button', { class: 'fmg-dialog-btn', type: 'button', onclick: () => this.opts.onModSettings() }, this.t('gui-menu', 'mod-settings')) : null;
+      const play = el('button', { class: 'fmg-dialog-btn fmg-confirm', type: 'button', onclick: () => this.play() }, this.opts.playLabel || this.t('gui-map-generator', 'play'));
+      if (!this.previewOpen) return el('div', { class: 'fmg-footer' }, back, el('div', { class: 'fmg-drag' }), mods, previewBtn, play);
+      return el('div', { class: 'fmg-footer fmg-footer-split' },
+        el('div', { class: 'fmg-footer-part' }, back, el('div', { class: 'fmg-drag' }), mods),
+        el('div', { class: 'fmg-footer-part' }, previewBtn, el('div', { class: 'fmg-drag' }), play));
+    }
+
+    // A Factorio dropdown: a button showing the choice, and a list that opens
+    // under it (dark items, orange on hover).
+    dropdown({ options, value, onChange, width, label }) {
+      const cur = options.find((o) => o.value === value) || options[0];
+      const icon = (o) => (o.icon ? el('img', { class: 'fmg-dd-icon', src: o.icon, alt: '' }) : null);
+      const btn = el('button', { class: 'fmg-dd-btn', type: 'button', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': label },
+        icon(cur), el('span', { class: 'fmg-dd-text' }, cur ? cur.text : ''), el('span', { class: 'fmg-dd-arrow' }));
+      const wrap = el('div', { class: 'fmg-dropdown', style: width ? { width: width + 'px' } : null }, btn);
+      const close = () => {
+        const list = wrap.querySelector('.fmg-dd-list');
+        if (list) list.remove();
+        btn.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('mousedown', outside, true);
+      };
+      const outside = (e) => { if (!wrap.contains(e.target)) close(); };
+      const pick = (v) => { close(); btn.focus(); if (v !== value) onChange(v); };
+      const open = (byKey) => {
+        if (wrap.querySelector('.fmg-dd-list')) return close();
+        const items = options.map((o) => el('button', {
+          class: 'fmg-dd-item' + (o.value === value ? ' fmg-dd-current' : ''), type: 'button', role: 'option',
+          'aria-selected': String(o.value === value), onclick: () => pick(o.value),
+          onkeydown: (e) => {
+            const all = [...list.children], i = all.indexOf(e.currentTarget);
+            if (e.key === 'ArrowDown') { e.preventDefault(); (all[i + 1] || all[i]).focus(); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); (all[i - 1] || all[i]).focus(); }
+            else if (e.key === 'Escape') { e.preventDefault(); close(); btn.focus(); }
+            else if (e.key === 'Tab') close();
+          },
+        }, icon(o), el('span', {}, o.text)));
+        const list = el('div', { class: 'fmg-dd-list', role: 'listbox', 'aria-label': label, tabindex: '-1',
+          onkeydown: (e) => {
+            if (e.target !== list) return;
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); (list.querySelector('.fmg-dd-current') || list.firstChild).focus(); }
+            else if (e.key === 'Escape') { e.preventDefault(); close(); btn.focus(); }
+          } }, items);
+        wrap.append(list);
+        btn.setAttribute('aria-expanded', 'true');
+        document.addEventListener('mousedown', outside, true);
+        // From the keyboard, start on the current choice; from the mouse only
+        // the hovered item lights up, as in the game.
+        if (byKey) (list.querySelector('.fmg-dd-current') || list.firstChild).focus();
+        else list.focus();
+      };
+      btn.addEventListener('click', (e) => open(e.detail === 0));
+      btn.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); open(true); }
+      });
+      return wrap;
     }
 
     // Re-render after a change without losing the scroll position.
@@ -319,30 +380,46 @@
 
     previewRequest() {
       const mgs = this.result().mapGenSettings;
-      return JSON.stringify({ map_gen_settings: mgs, space_age: this.modset === 'space-age', planet: this.previewPlanet || 'nauvis', size: 512 });
+      return JSON.stringify({ map_gen_settings: mgs, space_age: this.modset === 'space-age', planet: this.previewPlanet || 'nauvis', size: 1024 });
     }
 
     renderPreview() {
       const G = (k) => this.t('gui-map-generator', k);
-      const st = this.previewState || (this.previewState = { auto: true });
+      // Auto-refresh starts off, as in the game.
+      const st = this.previewState || (this.previewState = { auto: false });
       const planets = this.modsetData.planets;
-      const img = st.url ? el('img', { class: 'fmg-preview-img', src: st.url, alt: '' }) : null;
+      const img = st.url ? el('img', { class: 'fmg-preview-img', src: st.url, alt: '', onload: (e) => this.centrePreview(e.target) }) : null;
       const status = st.loading ? el('div', { class: 'fmg-preview-status' }, '…')
         : st.error ? el('div', { class: 'fmg-preview-status fmg-error' }, G('preview-error') + (st.error ? '\n' + st.error : '')) : null;
-      const refresh = st.auto && !st.error ? null : el('button', { class: 'fmg-btn', type: 'button', onclick: () => this.loadPreview(true) }, this.t('gui', 'refresh'));
+      const refresh = el('button', { class: 'fmg-btn fmg-icon', type: 'button', 'aria-label': this.t('gui', 'refresh'), onclick: () => this.loadPreview(true) }, glyph('refresh'));
+      this.tip(refresh, () => this.t('gui', 'refresh'));
       const auto = this.checkbox(st.auto, (v) => { st.auto = v; }, G('preview-auto-update'), G('preview-auto-update-tt'));
+      const planet = this.dropdown({
+        label: 'Planet', width: 116, value: this.previewPlanet || 'nauvis',
+        options: planets.map((p) => ({ value: p.name, text: p.label, icon: this.iconBase + 'planet/' + p.name + '.png' })),
+        onChange: (v) => { this.previewPlanet = v; this.loadPreview(true); },
+      });
       return el('div', { class: 'fmg-deep fmg-preview' },
-        el('div', { class: 'fmg-subheader' },
-          planets.length > 1 ? el('div', { class: 'fmg-dropdown', style: { width: '160px' } }, el('select', {
-            'aria-label': 'Planet', onchange: (e) => { this.previewPlanet = e.target.value; this.render(); },
-          }, planets.map((p) => el('option', { value: p.name, selected: p.name === (this.previewPlanet || 'nauvis') }, p.label)))) : null,
-          el('div', { class: 'fmg-spacer' }), auto, refresh),
-        el('div', { class: 'fmg-preview-frame' + (st.loading ? ' fmg-loading' : '') }, img, status));
+        el('div', { class: 'fmg-subheader' }, el('div', { class: 'fmg-spacer' }), auto, planet, refresh),
+        el('div', { class: 'fmg-preview-frame' + (st.loading ? ' fmg-loading' : ''), onscroll: (e) => { this.previewScroll = [e.target.scrollLeft, e.target.scrollTop]; } }, img, status));
+    }
+
+    // Start a new map scrolled to its middle (the spawn), like the game.
+    centrePreview(img) {
+      const frame = img.parentElement;
+      if (!frame) return;
+      if (this.previewCentred === img.src && this.previewScroll) {
+        [frame.scrollLeft, frame.scrollTop] = this.previewScroll;
+        return;
+      }
+      this.previewCentred = img.src;
+      frame.scrollLeft = (frame.scrollWidth - frame.clientWidth) / 2;
+      frame.scrollTop = (frame.scrollHeight - frame.clientHeight) / 2;
     }
 
     schedulePreview() {
       const st = this.previewState;
-      if (!st || (!st.auto && (st.url || st.error))) return;
+      if (!st || (!st.auto && (st.url || st.error || st.loading))) return;
       clearTimeout(this.previewTimer);
       this.previewTimer = setTimeout(() => this.loadPreview(false), 400);
     }
@@ -532,9 +609,11 @@
       const md = this.modsetData, pen = this.settings.mgs.property_expression_names;
       const elevations = md.elevation;
       const curElev = pen.elevation || 'elevation';
-      const mapType = el('select', {
-        onchange: (e) => { if (e.target.value === 'elevation') delete pen.elevation; else pen.elevation = e.target.value; this.changed(); },
-      }, elevations.map((x) => el('option', { value: x.name, selected: x.name === curElev }, x.label)));
+      const mapType = this.dropdown({
+        label: G('map-type'), width: 196, value: curElev,
+        options: elevations.map((x) => ({ value: x.name, text: x.label })),
+        onChange: (v) => { if (v === 'elevation') delete pen.elevation; else pen.elevation = v; this.changed(); },
+      });
       const terrain = md.controls.filter((c) => c.category === 'terrain');
       const cliffs = md.controls.filter((c) => c.category === 'cliff');
       const nameCell = (c) => el('td', {}, el('span', { class: 'fmg-name' }, this.controlCheckbox(c), this.label(c.label, c.description)));
@@ -557,7 +636,7 @@
           })));
       };
       return el('div', {},
-        el('div', { class: 'fmg-group fmg-row', style: { marginBottom: '4px' } }, el('span', { class: 'fmg-row-label' }, G('map-type')), el('div', { class: 'fmg-dropdown', style: { minWidth: '160px' } }, mapType)),
+        el('div', { class: 'fmg-group fmg-row', style: { marginBottom: '4px' } }, el('span', { class: 'fmg-row-label' }, G('map-type')), mapType),
         el('table', { class: 'fmg-table fmg-wide-first' },
           this.header([null, { text: G('appears-on'), tip: G('appears-on-description'), planet: true },
             { text: G('scale'), tip: G('terrain-scale-description') }, { text: G('coverage'), tip: G('terrain-coverage-description') }]),
