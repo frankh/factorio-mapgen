@@ -1013,10 +1013,20 @@
     var xs = arr(a[0], n), ys = arr(a[1], n), p = a[2];
     out.fill(0);
     if (typeof p === 'number') {
-      var amps = [], norm = 0;
-      for (var k = 0; k < oct; k++) { amps.push(gamePow(p, oct - 1 - k)); norm = fr(norm + fr(amps[k] * amps[k])); }
-      norm = fr(Math.sqrt(norm));
-      for (k = 0; k < oct; k++) basisAdd(out, xs, ys, n, e[0], e[1], 0, e[3] / Math.pow(2, k), 17.17 * k, fr(fr(amps[k] / norm) * e[4]));
+      // As NoiseOperations::MultioctaveNoise: the finest octave's weight in
+      // closed form, sqrt((q - 1) / (q^n - 1)) with q = 1/p^2 and the power
+      // from the fast approximation, then times 1/p for each coarser one.
+      var amp;
+      if (p === 1) amp = fr(e[4] / Math.sqrt(oct));
+      else {
+        var ip = fr(1 / p), q = fr(ip * ip);
+        var r = gameFastPow(q, oct);
+        amp = fr(Math.sqrt(fr(fr(q - 1) / fr(r - 1))) * e[4]);
+      }
+      for (var k = 0; k < oct; k++) {
+        basisAdd(out, xs, ys, n, e[0], e[1], 0, e[3] / Math.pow(2, k), 17.17 * k, amp);
+        amp = p === 1 ? amp : fr(amp * fr(1 / p));
+      }
     } else {
       var w = new Float32Array(n), nn = new Float64Array(n);
       for (k = 0; k < oct; k++) {

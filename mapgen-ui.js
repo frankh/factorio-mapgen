@@ -459,7 +459,7 @@
     workers() {
       if (this.previewWorkers) return this.previewWorkers;
       const n = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
-      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=3';
+      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=4';
       this.previewWorkers = [];
       for (let i = 0; i < n; i++) {
         const w = new Worker(url);

@@ -114,7 +114,8 @@ def colour(c):
         c = [c.get("r", 0), c.get("g", 0), c.get("b", 0), c.get("a", 1)]
     c = list(c) + [1] * (4 - len(c))
     if max(c[:3]) > 1:
-        return [round(c[0]), round(c[1]), round(c[2]), round(c[3] * 255) if c[3] <= 1 else round(c[3])]
+        # 0-255 colours with fractions: the game truncates them.
+        return [int(c[0]), int(c[1]), int(c[2]), int(c[3] * 255) if c[3] <= 1 else int(c[3])]
     return [int(c[0] * 255), int(c[1] * 255), int(c[2] * 255), int(c[3] * 255)]
 
 

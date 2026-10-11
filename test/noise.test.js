@@ -8,9 +8,7 @@ const fx = require('./noise-fixtures.json');
 
 // The game evaluates in 32-bit floats; long chains of octaves can drift by
 // a few float steps, and patch fields reach the tens of thousands.
-// multioctave_noise weighs its octaves with the game's fast pow
-// approximation, which isn't reproduced yet: off by ~2e-5.
-const TOLERANCE = { elevation: 0.01, moisture: 1e-4, coal: 2, multioctave: 1e-4 };
+const TOLERANCE = { elevation: 0.01, moisture: 1e-4, coal: 2, multioctave: 5e-5 };
 
 for (const [name, c] of Object.entries(fx.cases)) {
   test(name, () => {
