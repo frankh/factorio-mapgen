@@ -428,7 +428,7 @@
       case 'cliff_richness': return this.constant(Math.fround(cliff.richness === undefined ? 1 : cliff.richness));
       case 'cliff_elevation_interval': return this.constant(Math.fround(cliff.cliff_elevation_interval === undefined ? 40 : cliff.cliff_elevation_interval));
       case 'cliff_elevation_0': return this.constant(Math.fround(cliff.cliff_elevation_0 === undefined ? 10 : cliff.cliff_elevation_0));
-      case 'cliff_smoothing': return this.constant(Math.fround(cliff.cliff_smoothing === undefined ? 0 : cliff.cliff_smoothing));
+      case 'cliff_smoothing': return this.constant(Math.fround(cliff.cliff_smoothing === undefined ? 1 : cliff.cliff_smoothing));
       case 'map_width': return this.constant(mgs.width || 2000000);
       case 'map_height': return this.constant(mgs.height || 2000000);
     }
@@ -548,6 +548,7 @@
       }
       case 'multisample': {
         var dx = this.constValue(this.expr(a.args[1], scope)), dy = this.constValue(this.expr(a.args[2], scope));
+        if (this.spacing) { dx *= this.spacing[0]; dy *= this.spacing[1]; }
         var ctx = { x: this.node('add', [scope.ctx.x, this.constant(dx)]), y: this.node('add', [scope.ctx.y, this.constant(dy)]) };
         // Locals already compiled at the unshifted position are redone.
         return this.expr(a.args[0], this.shifted(scope, ctx));
@@ -1097,8 +1098,12 @@
 
   // outputs: names of noise expressions, or {src, scope} objects. Returns a
   // program whose run(xs, ys) gives one Float32Array per output.
-  function compile(defs, mgs, outputs) {
+  // opts.spacing: the distance between neighbouring sample points, which is
+  // what multisample's offsets count in (1 for tiles, the grid size for the
+  // cliff lattice).
+  function compile(defs, mgs, outputs, opts) {
     var b = new Builder(defs, mgs);
+    if (opts && opts.spacing) b.spacing = opts.spacing;
     var ctx = { x: b.X, y: b.Y };
     var ids = outputs.map(function (o) {
       if (typeof o === 'string') return b.global(o, ctx);

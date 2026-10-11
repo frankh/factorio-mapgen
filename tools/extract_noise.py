@@ -71,12 +71,20 @@ for tname, list in pairs(data.raw) do
       if type(p) == "table" and p.autoplace then
         out.entity[n] = {type = tname, autoplace = p.autoplace, map_color = p.map_color,
           enemy_map_color = p.enemy_map_color, collision_box = p.collision_box, order = p.order,
-          collision_mask = p.collision_mask, flags = p.flags}
+          collision_mask = p.collision_mask, flags = p.flags, map_grid = p.map_grid,
+          map_generator_bounding_box = p.map_generator_bounding_box}
       end
     end
   end
 end
 for n, p in pairs(data.raw["planet"] or {}) do out.planet[n] = {map_gen_settings = p.map_gen_settings, order = p.order} end
+out.cliff = {}
+for n, c in pairs(data.raw["cliff"] or {}) do
+  local o = {}
+  for k, v in pairs(c.orientations or {}) do o[k] = v.collision_bounding_box end
+  out.cliff[n] = {grid_size = c.grid_size, grid_offset = c.grid_offset, map_color = c.map_color,
+    collision_mask = c.collision_mask, orientations = o}
+end
 log("NOISEDATA:" .. enc(out))
 """
 
@@ -138,7 +146,11 @@ def slim(data):
         out["entity"][n] = drop_none({
             "type": e["type"], "order": e.get("order"), "color": colour(e.get("map_color")),
             "box": e.get("collision_box"), "layers": sorted((mask.get("layers") or {}).keys()),
+            # Map generation tests tiles (and spaces enemies) with this box instead.
+            "genbox": e.get("map_generator_bounding_box"),
             "offgrid": "placeable-off-grid" in (e.get("flags") or []) or None,
+            # Resources show on a 2x2 checkerboard unless map_grid is off.
+            "nogrid": (e["type"] == "resource" and e.get("map_grid") is False) or None,
             "autoplace": drop_none({k: a.get(k) for k in ("control", "order", "force", "probability_expression",
                                                            "richness_expression", "local_expressions", "local_functions", "tile_restriction",
                                                            "placement_density")}),
@@ -148,6 +160,12 @@ def slim(data):
         if m:
             out["planet"][n] = drop_none({k: m.get(k) for k in ("property_expression_names", "autoplace_controls",
                                                                 "autoplace_settings", "cliff_settings")})
+    out["cliff"] = {}
+    for n, c in data.get("cliff", {}).items():
+        mask = c.get("collision_mask") or (data.get("default_collision_masks") or {}).get("cliff") or {}
+        out["cliff"][n] = {"grid_size": c["grid_size"], "grid_offset": c["grid_offset"],
+                           "color": colour(c.get("map_color")), "layers": sorted((mask.get("layers") or {}).keys()),
+                           "orientations": c["orientations"]}
     out["chart"] = {k: colour(v) for k, v in data["chart"].items() if v}
     return out
 

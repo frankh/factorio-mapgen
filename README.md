@@ -104,11 +104,15 @@ canvas the player can drag around.
 | `preview.js` | Tile choice, entity placement and the preview's colours |
 | `noisedata.js` | Noise expressions and functions, tile and entity autoplace data, planets, chart colours (`extract_noise.py`) |
 
-For Nauvis the result matches `factorio --generate-map-preview` on 99.8% of
-pixels in a 256x256 view and 98.7% at 1024x1024. Terrain is exact. What
-remains is cliffs (not drawn yet) and enemy bases, which the game thins out
-in a way not reproduced yet. Vulcanus, Gleba, Aquilo and Fulgora render too,
-less exactly (cliffs and some planet-specific entities are missing).
+Against `factorio --generate-map-preview` at 1024x1024 (seed 987654), the
+share of pixels that match exactly:
+
+| Nauvis | Vulcanus | Gleba | Fulgora | Aquilo |
+| --- | --- | --- | --- | --- |
+| 99.9% | 99.3% | 99.7% | 99.8% | 99.97% |
+
+Terrain is exact; what differs is mostly a few cliffs and entities where the
+noise is off in its last bits.
 
 ### How the game does it
 
@@ -142,13 +146,33 @@ maps it generates. `test/noise.test.js` holds a sample of those values.
   (fastapprox's `fastpow`; a polynomial sine).
 - Tiles: the highest probability wins. Planets other than Nauvis use the map
   seed plus the CRC-32 of the planet's name.
-- Entities (`EntityMapGenerationTask`): groups of equal autoplace order; per
-  tile the most probable entity of the group; then, last tile first, a draw
-  from the chunk's taus88 stream (seeded `7919 cx + 7907 cy + 0x3fbe2c`)
-  under its probability places it, off-grid entities at a random 1/16-tile
-  offset. The preview draws that list: ore on a 2x2-tile checkerboard, trees
-  as a tint (`pixel += (colour - pixel) * 102 >> 8`) over every pixel their
-  collision box touches, rocks in their map colour.
+- Entities (`EntityMapGenerationTask::generateEntities`): groups of equal
+  autoplace order; per tile the most probable entity of the group whose
+  collision mask and `tile_restriction` the tile allows; then, last tile
+  first, `placement_density` draws from the chunk's taus88 stream (seeded
+  `7919 cx + 7907 cy + 0x3fbe2c`) under its probability place it: resources
+  (with positive richness) at the tile centre, off-grid entities at a random
+  1/16-tile offset, as long as no tile under `map_generator_bounding_box`
+  blocks it. A planet's `property_expression_names` can swap in its own
+  `entity:<name>:probability` (and `richness`, and `tile:...`).
+  `multisample` offsets count sample points, so on the cliff lattice they are
+  a grid cell apart.
+- Cliffs (`computeInternal`): on each chunk's lattice of `grid_size` cells,
+  `cliff_elevation` (pulled towards a bilinear blend over blocks of four
+  cells by `cliff_smoothing`, which is 1 unless the planet says otherwise)
+  and `cliffiness`. A cell edge crosses where its ends sit either side of a
+  contour (`cliff_elevation_0` plus multiples of the interval over the
+  control's frequency) and their mean cliffiness is over 0.5; impossible
+  cells lose edges; the rest become pieces whose orientation follows the
+  crossings, kept unless a tile under the orientation's unrotated box
+  collides.
+- Drawing (`MapPreviewGenerator::Worker::computeEntities`): cliffs first,
+  over the rotated box's bounds; then the entities, last placed first, over
+  every pixel their collision box touches, mixed by `alpha + (alpha >> 7)`
+  out of 256: ore on alternate 2x2 squares (unless `map_grid` is off, as for
+  oil), trees as a translucent tint, rocks in their map colour. Spawners and
+  worms whose `map_generator_bounding_box` meets one already drawn are left
+  out, and enemies go on top of everything in the enemy colour.
 
 ### Server fallback
 
