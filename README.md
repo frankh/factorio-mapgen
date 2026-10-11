@@ -116,21 +116,27 @@ noise is off in its last bits.
 
 ### Speed
 
-Rendering a 512x512 view on one core takes 1 to 6 seconds depending on the
-planet (Aquilo quickest, Fulgora slowest); the page spreads chunks over up
-to six workers. The evaluator runs each node over a whole chunk at once,
-with a typed loop per operator, buffers reused between nodes and runs, and
-nodes that ask for the same nearest-cell search sharing it. Pass 1 reuses
-pass 0's tiles and only works out the ring of tiles around the chunk that
-collision checks reach into.
+Rendering a 512x512 view on one core takes 0.6 to 1.7 seconds depending on
+the planet (Aquilo quickest, Fulgora slowest); the page spreads chunks over
+up to six workers. The evaluator runs each node over a whole chunk at once.
 
-Basis noise, which every octave noise is made of, runs in WebAssembly with
-SIMD, four points at a time (`wasm/basis.c`, embedded in `noise.js` by
-`wasm/build.sh`). It does the game's single-precision arithmetic in the
-game's order, so it gives the same bits as the JS loop beside it, which
-browsers without WebAssembly SIMD (or pages without `'wasm-unsafe-eval'` in
-their CSP) use instead, at about half the speed. The site's CSP still rules
-out `new Function`.
+Basis noise, which every octave noise is made of, and the element-wise
+operators run in WebAssembly with SIMD, four points at a time
+(`wasm/noise.c`, embedded in `noise.js` by `wasm/build.sh`), on buffers kept
+in the module's memory. Each program runs to a plan per number of points:
+every node's buffer fixed in advance, and each run of element-wise nodes one
+call into the module. The kernels do the game's single-precision arithmetic
+in the game's order, so they give the same bits as the JS loops beside them,
+which browsers without WebAssembly SIMD (or pages without
+`'wasm-unsafe-eval'` in their CSP) use instead, several times slower. The
+site's CSP still rules out `new Function`.
+
+Voronoi noise bins points by quarter cell. Each bin searches only the cells
+that can hold the nearest or second nearest point for something in it, and
+pyramids measure only the bisectors that can be nearest somewhere in the
+bin, so the results are those of searching them all. Nodes that ask for the
+same search share it. Pass 1 takes the tiles under and around a chunk from
+pass 0 and only works out those beyond the rendered area.
 
 ### How the game does it
 

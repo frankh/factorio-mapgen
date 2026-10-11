@@ -50,3 +50,39 @@ test('grid path: WebAssembly matches JS', { skip: !N.wasm() }, () => {
     j.forEach((v, i) => assert.ok(Object.is(v, w[i]), `${src}: WebAssembly ${w[i]}, JS ${v} at ${i}`));
   }
 });
+
+// The program's operators in WebAssembly give the JS loops' bits, odd
+// values included, both run to a plan and node by node (past the few
+// point counts a program keeps plans for).
+test('operators: WebAssembly matches JS', { skip: !N.wasm() }, () => {
+  const special = [0, -0, 1, -1, 0.5, -0.5, 2.5, -2.5, 3, -3, 1e-40, -1e-40, 0.1, 7.75, -7.75, 1 / 3, 123456.78,
+    1e30, -1e30, 3e9, -3e9, 2147483647, 2147483648, -2147483649, Infinity, -Infinity, NaN];
+  const v = special.concat(Array.from({ length: 13 }, (_, i) => Math.sin(i * 7.1) * 10 ** (i % 5)));
+  const xs = new Float32Array(v.length * v.length), ys = new Float32Array(xs.length);
+  v.forEach((a, i) => v.forEach((b, j) => { xs[i * v.length + j] = a; ys[i * v.length + j] = b; }));
+  const srcs = ['x + y', 'x - y', 'x * y', 'x / y', 'x % y', 'min(x, y)', 'max(x, y)', 'x < y', 'x <= y', 'x > y',
+    'x >= y', 'x == y', 'x != y', 'x & y', 'x | y', '~x', '-x', 'abs(x)', 'floor(x)', 'ceil(x)', 'sqrt(x)',
+    'clamp(x, -1.5, 2.25)', 'clamp(x, y, 4)', 'if(x - y, x, 3)', 'if(x, 0.25, y)', 'x ^ 2', 'x ^ 3', 'x ^ -2',
+    'x ^ 0', 'x ^ 0.5', 'x ^ 1.7', 'x ^ -0.3', '2 ^ x', 'x + 0.1', '2.5 - x', '7 / x', 'x % 2.5', '5 % x', 'x & 6',
+    'x + map_seed'];
+  const prog = N.compile(D.modsets.vanilla, { seed: 123456789 }, srcs.map((src) => ({ src })));
+  for (let n = xs.length; n > xs.length - 7; n--) {
+    const w = prog.run(xs.subarray(0, n), ys.subarray(0, n)).map((a) => a.slice());
+    N.wasm(false);
+    const j = prog.run(xs.subarray(0, n), ys.subarray(0, n));
+    N.wasm(true);
+    srcs.forEach((src, k) => j[k].forEach((jv, i) => assert.ok(Object.is(jv, w[k][i]),
+      `${src} at x = ${xs[i]}, y = ${ys[i]}: WebAssembly ${w[k][i]}, JS ${jv}`)));
+  }
+});
+
+// Running a program again reuses its buffers.
+test('programs reuse their buffers', { skip: !N.wasm() }, () => {
+  const prog = N.compile(D.modsets.vanilla, { seed: 1 }, ['elevation', 'moisture']);
+  const xs = Float32Array.from({ length: 1024 }, (_, i) => i % 32), ys = Float32Array.from({ length: 1024 }, (_, i) => i >> 5);
+  const sizes = [1024, 1000, 999, 998, 997, 996, 995, 500];
+  for (const n of sizes) prog.run(xs.subarray(0, n), ys.subarray(0, n));
+  const used = N.heapUsed();
+  for (let k = 0; k < 20; k++) for (const n of sizes.concat(sizes.map((n) => n - 100))) prog.run(xs.subarray(0, n), ys.subarray(0, n));
+  assert.strictEqual(N.heapUsed(), used);
+});

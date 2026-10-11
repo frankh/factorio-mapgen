@@ -11,6 +11,7 @@
   'use strict';
 
   var CHUNK = 32;
+  var BLACK = [0, 0, 0];
 
   // CliffOrientation, in the game's order.
   var ORIENTATIONS = ['west_to_east', 'north_to_south', 'east_to_west', 'south_to_north', 'west_to_north', 'north_to_east',
@@ -116,9 +117,9 @@
       e.spaced = e.def.type === 'unit-spawner' || e.def.type === 'turret';
       var layers = e.def.layers || [];
       var allowed = a.tile_restriction ? new Set(a.tile_restriction.filter(function (x) { return typeof x === 'string'; })) : null;
-      e.blockedBy = tiles.map(function (t, i) {
-        if (allowed && !allowed.has(t)) return true;
-        return layers.some(function (l) { return tileSets[i].has(l); });
+      e.blockedBy = Uint8Array.from(tiles, function (t, i) {
+        if (allowed && !allowed.has(t)) return 1;
+        return layers.some(function (l) { return tileSets[i].has(l); }) ? 1 : 0;
       });
       e.color = e.kind === 'tree' ? null : e.kind === 'enemy' ? null : e.def.color;
     });
@@ -144,7 +145,8 @@
       return [xs, ys];
     }
 
-    // Each chunk's tiles from pass 0, kept for pass 1's collision checks.
+    // Each chunk's tiles from pass 0, kept for pass 1's collision checks
+    // there and in the chunks around it.
     var chunkTiles = new Map();
     // The game evaluates a chunk as a grid, which its noise has a path for.
     function chunkGrid(cx, cy) { return scale === 1 ? { x0: cx * CHUNK, y0: cy * CHUNK } : null; }
@@ -159,12 +161,14 @@
     function terrain(cx, cy) {
       var p = positions(cx, cy), n = CHUNK * CHUNK;
       var r = tileProg.run(p[0], p[1], chunkGrid(cx, cy));
-      var px = new Uint8ClampedArray(n * 4), ids = new Int16Array(n);
-      for (var k = 0; k < n; k++) {
-        var best = -Infinity, bi = -1;
-        for (var t = 0; t < r.length; t++) if (r[t][k] > best) { best = r[t][k]; bi = t; }
-        ids[k] = bi;
-        var c = bi >= 0 ? colors[bi] : [0, 0, 0];
+      var px = new Uint8ClampedArray(n * 4), ids = new Int16Array(n).fill(-1), best = new Float32Array(n).fill(-Infinity), k;
+      // The highest probability (the first of equals) at each tile.
+      for (var t = 0; t < r.length; t++) {
+        var rt = r[t];
+        for (k = 0; k < n; k++) if (rt[k] > best[k]) { best[k] = rt[k]; ids[k] = t; }
+      }
+      for (k = 0; k < n; k++) {
+        var c = ids[k] >= 0 ? colors[ids[k]] : BLACK;
         px[k * 4] = c[0]; px[k * 4 + 1] = c[1]; px[k * 4 + 2] = c[2]; px[k * 4 + 3] = 255;
       }
       if (entProg || cliffs) chunkTiles.set(cx + ',' + cy, ids);
@@ -208,16 +212,16 @@
       var seed = (Math.imul(cx, 7919) + Math.imul(cy, 7907) + 0x3fbe2c) >>> 0;
       var rng = new N.Taus88(seed < 342 ? 341 : seed);
       var placed = [];
-      var bp = new Float32Array(n), br = new Float32Array(n), be = new Int32Array(n);
+      var bp = new Float32Array(n), br = new Float32Array(n), be = new Int32Array(n), inner = tl.inner;
       for (var g = 0; g < groups.length; g++) {
         var grp = groups[g];
         bp.fill(-Infinity); be.fill(-1);
         for (var q = 0; q < grp.length; q++) {
-          var e = grp[q], pr = r[e.p], rr = r[e.r];
+          var e = grp[q], pr = r[e.p], rr = r[e.r], blk = e.blockedBy;
           for (var k = n - 1; k >= 0; k--) {
-            if (tl.blocks(e, k)) continue;
-            var v = pr[k], rv = rr[k];
-            if (v > bp[k] || (v === bp[k] && rv > br[k])) { bp[k] = v; br[k] = rv; be[k] = q; }
+            if (blk[inner[k]]) continue;
+            var v = pr[k];
+            if (v > bp[k] || (v === bp[k] && rr[k] > br[k])) { bp[k] = v; br[k] = rr[k]; be[k] = q; }
           }
         }
         for (k = n - 1; k >= 0; k--) {
@@ -431,48 +435,45 @@
     // The tiles under and around a chunk, for collision masks. Entity boxes
     // can reach a couple of tiles into the next chunk.
     var B = 4, W = CHUNK + 2 * B;
-    // Ring positions (the border around a chunk), relative to its corner.
-    var ringX = [], ringY = [];
-    for (var rj = -B; rj < CHUNK + B; rj++) for (var ri = -B; ri < CHUNK + B; ri++) {
-      if (ri >= 0 && ri < CHUNK && rj >= 0 && rj < CHUNK) continue;
-      ringX.push(ri); ringY.push(rj);
-    }
     function argmax(r, k) {
       var best = -Infinity, bi = 0;
       for (var t = 0; t < r.length; t++) if (r[t][k] > best) { best = r[t][k]; bi = t; }
       return bi;
     }
     function tileLayers(cx, cy) {
-      var id = new Int16Array(W * W), key = cx + ',' + cy, inner = chunkTiles.get(key), k, r;
-      if (inner) {
-        // The chunk itself from pass 0; only the ring around it is new.
-        chunkTiles.delete(key);
-        var m = ringX.length, xs = new Float32Array(m), ys = new Float32Array(m);
-        for (k = 0; k < m; k++) { xs[k] = cx * CHUNK + ringX[k]; ys[k] = cy * CHUNK + ringY[k]; }
-        r = tileProg.run(xs, ys, pointsGrid(xs, ys));
-        for (k = 0; k < m; k++) id[(ringY[k] + B) * W + ringX[k] + B] = argmax(r, k);
-        for (var j = 0; j < CHUNK; j++) for (var i = 0; i < CHUNK; i++) {
-          var t = inner[j * CHUNK + i];
-          id[(j + B) * W + i + B] = t < 0 ? 0 : t;
+      // From pass 0 where it has been (the chunk and its neighbours), the
+      // rest evaluated here, each tile on its own chunk's grid as pass 0
+      // would have.
+      var id = new Int16Array(W * W), xs = [], ys = [], at = [], i, j, k;
+      for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+        var ncx = cx + dx, ncy = cy + dy, done = chunkTiles.get(ncx + ',' + ncy);
+        var ia = Math.max(0, dx * CHUNK + B), ib = Math.min(W, (dx + 1) * CHUNK + B);
+        var ja = Math.max(0, dy * CHUNK + B), jb = Math.min(W, (dy + 1) * CHUNK + B);
+        for (j = ja; j < jb; j++) for (i = ia; i < ib; i++) {
+          var tx = cx * CHUNK + i - B, ty = cy * CHUNK + j - B;
+          if (done) { var t = done[(ty - ncy * CHUNK) * CHUNK + tx - ncx * CHUNK]; id[j * W + i] = t < 0 ? 0 : t; }
+          else { xs.push(tx); ys.push(ty); at.push(j * W + i); }
         }
-      } else {
-        xs = new Float32Array(W * W); ys = new Float32Array(W * W);
-        for (j = 0; j < W; j++) for (i = 0; i < W; i++) { xs[j * W + i] = cx * CHUNK + i - B; ys[j * W + i] = cy * CHUNK + j - B; }
-        r = tileProg.run(xs, ys, pointsGrid(xs, ys));
-        for (k = 0; k < W * W; k++) id[k] = argmax(r, k);
       }
-      var at = function (tx, ty) {
+      if (at.length) {
+        var fx = new Float32Array(xs), fy = new Float32Array(ys), r = tileProg.run(fx, fy, pointsGrid(fx, fy));
+        for (k = 0; k < at.length; k++) id[at[k]] = argmax(r, k);
+      }
+      var tileAt = function (tx, ty) {
         var i = tx - cx * CHUNK + B, j = ty - cy * CHUNK + B;
         return i < 0 || j < 0 || i >= W || j >= W ? -1 : id[j * W + i];
       };
+      // The chunk's own tiles, in position order.
+      var inner = new Int16Array(CHUNK * CHUNK);
+      for (j = 0; j < CHUNK; j++) inner.set(id.subarray((j + B) * W + B, (j + B) * W + B + CHUNK), j * CHUNK);
       return {
-        at: at,
-        blocks: function (e, k) { return e.blockedBy[id[(((k / CHUNK) | 0) + B) * W + (k % CHUNK) + B]]; },
+        at: tileAt,
+        inner: inner,
         boxBlocked: function (e, fx, fy) {
           var b = e.box;
           var xa = (fx + b[0]) >> 8, xb = (fx + b[2]) >> 8, ya = (fy + b[1]) >> 8, yb = (fy + b[3]) >> 8;
           for (var ty = ya; ty <= yb; ty++) for (var tx = xa; tx <= xb; tx++) {
-            var t = at(tx, ty);
+            var t = tileAt(tx, ty);
             if (t >= 0 && e.blockedBy[t]) return true;
           }
           return false;

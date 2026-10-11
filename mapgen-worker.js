@@ -7,7 +7,7 @@
 // Messages out: {type: 'chunk', job, pass, cx, cy, w, h, pixels (RGBA)}
 //               {type: 'done', job}, {type: 'error', job, message}
 /* global importScripts, FactorioNoise, FactorioNoiseData, FactorioPreview */
-importScripts('noise.js?v=7', 'noisedata.js?v=7', 'preview.js?v=7');
+importScripts('noise.js?v=8', 'noisedata.js?v=7', 'preview.js?v=8');
 
 let current = 0;
 
@@ -16,6 +16,8 @@ self.onmessage = (e) => {
   if (m.type === 'stop') { if (m.job === current) current = 0; return; }
   if (m.type !== 'start') return;
   current = m.job;
+  // The last preview's buffers won't be read again.
+  FactorioNoise.resetHeap();
   let renderer;
   try {
     renderer = FactorioPreview.renderer(FactorioNoiseData.modsets[m.modset], m.planet, m.mgs, m.scale);
