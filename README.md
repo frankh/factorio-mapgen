@@ -93,11 +93,73 @@ here, as the game's aren't in its data files; typed values are stored exactly.
 
 ## Preview
 
-The Preview button posts the map gen settings to `POST /mapgen/preview`
-(`internal/control/preview.go`). The control plane renders it with the real
-headless game (`factorio --generate-map-preview`, about 3 to 5 seconds) and
-caches the PNG. On first use it fetches the game from the
-`factoriotools/factorio` image on Docker Hub, unpacking only `bin/` and
-`data/`, and checks for a newer build of the tag every few hours
+The preview is drawn in the browser, the way the game draws its own: Web
+Workers (`mapgen-worker.js`) render 32x32-tile chunks from the middle
+outwards, terrain first and entities second, one pixel per tile, into a
+canvas the player can drag around.
+
+| File | What it is |
+| --- | --- |
+| `noise.js` | The game's noise builtins, and a compiler from its noise expression strings to vectorised programs |
+| `preview.js` | Tile choice, entity placement and the preview's colours |
+| `noisedata.js` | Noise expressions and functions, tile and entity autoplace data, planets, chart colours (`extract_noise.py`) |
+
+For Nauvis the result matches `factorio --generate-map-preview` on 99.8% of
+pixels in a 256x256 view and 98.7% at 1024x1024. Terrain is exact. What
+remains is cliffs (not drawn yet) and enemy bases, which the game thins out
+in a way not reproduced yet. Vulcanus, Gleba and Aquilo are close; Fulgora
+needs voronoi pyramid noise with manhattan/chebyshev distance, which isn't
+done, so the page asks the server for it (below).
+
+### How the game does it
+
+Worked out from the 2.0.77 headless binary (it keeps its symbols) and checked
+against values the game computes (`LuaSurface.calculate_tile_properties`) and
+maps it generates. `test/noise.test.js` holds a sample of those values.
+
+- **basis_noise**: gradient noise on a unit lattice, kernel `(g·d)(1-|d|²)³`
+  within radius 1, gradients of length 4.2 at one of 256 angles. The angle
+  comes from four permutation tables, shuffled with taus88 (as
+  `LuaRandomGenerator`, seeds below 341 count as 341) seeded with
+  `seed0 + 7 * (seed1 >> 8)`; `seed1 & 255` picks the row. A string seed1
+  is its CRC-32.
+- **multioctave_noise**: octave k (finest first) samples
+  `basis(x s / 2^k + 17.17 k, y s / 2^k)` weighted `p^(n-1-k)`, divided by the
+  root of the summed squared weights.
+- **quick_multioctave_noise**: octave k samples `(x + offset_x) s m_in^k`
+  with seed0 `+ k * octave_seed0_shift`, weighted `m_out^k`.
+- **variable_persistence_multioctave_noise**: octave j (coarsest first)
+  samples `(x + offset_x) s 2^(j-n)`, weighted `2^n p^j`.
+- **spot_noise**: regions of `region_size` centred on its multiples, each
+  with candidate points from taus88 seeded
+  `(7919 rx + 7907 ry + 7927 seed1 + 0x3fbe2c) ^ seed0`; cones of volume
+  `quantity` placed by favorability until the region's target is met. See
+  the comment in `noise.js`.
+- **random_penalty**: one taus88 stream per evaluated batch, seeded from its
+  first position, walked backwards.
+- **voronoi_***: one point per cell from Bob Jenkins' integer hash of the
+  cell and `seed0 + seed1`.
+- `^`, `sin` and `cos` use the game's own fast approximations
+  (fastapprox's `fastpow`; a polynomial sine).
+- Tiles: the highest probability wins. Planets other than Nauvis use the map
+  seed plus the CRC-32 of the planet's name.
+- Entities (`EntityMapGenerationTask`): groups of equal autoplace order; per
+  tile the most probable entity of the group; then, last tile first, a draw
+  from the chunk's taus88 stream (seeded `7919 cx + 7907 cy + 0x3fbe2c`)
+  under its probability places it, off-grid entities at a random 1/16-tile
+  offset. The preview draws that list: ore on a 2x2-tile checkerboard, trees
+  as a tint (`pixel += (colour - pixel) * 102 >> 8`) over every pixel their
+  collision box touches, rocks in their map colour.
+
+### Server fallback
+
+When the browser can't render something it posts the map gen settings to
+`POST /mapgen/preview` (`internal/control/preview.go`). The control plane
+renders it with the real headless game (`factorio --generate-map-preview`,
+about 3 to 5 seconds) and caches the PNG. On first use it fetches the game
+from the `factoriotools/factorio` image on Docker Hub, unpacking only `bin/`
+and `data/`, and checks for a newer build of the tag every few hours
 (`internal/mappreview`). That is why the image is Debian-based: the game needs
 glibc.
+
+`extract_noise.py /path/to/factorio` refreshes `noisedata.js`.

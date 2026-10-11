@@ -163,6 +163,8 @@
     if (!(a >= 0)) return NaN;
     return gameFastPow(a, b);
   }
+  // Bitwise operators work on the values truncated to 32-bit integers.
+  function toInt(v) { return v !== v ? 0 : v >= 2147483648 ? 2147483647 : v <= -2147483649 ? -2147483648 : Math.trunc(v) | 0; }
   function roundEven(v) { var r = Math.round(v); return (r - v === 0.5 && r % 2 !== 0) ? r - 1 : r; }
   function gameSin(x) { var t = x * 0.15915494309189535 + -0.25; return gameSinCos2(t); }
   function gameCos(x) { var t = x * 0.15915494309189535; return gameSinCos2(t); }
@@ -186,6 +188,10 @@
     eq: function (a, b) { return a === b ? 1 : 0; },
     ne: function (a, b) { return a !== b ? 1 : 0; },
     neg: function (a) { return -a; },
+    band: function (a, b) { return toInt(a) & toInt(b); },
+    bor: function (a, b) { return toInt(a) | toInt(b); },
+    bxor: function (a, b) { return toInt(a) ^ toInt(b); },
+    bnot: function (a) { return ~toInt(a); },
     abs: Math.abs, sqrt: Math.sqrt, sin: gameSin, cos: gameCos, floor: Math.floor, ceil: Math.ceil,
     log2: function (a) { return Math.log2(a); },
     atan2: function (a, b) { return Math.atan2(a, b); },
@@ -261,7 +267,7 @@
       if (!isOp(v)) throw new Error('expected ' + v + ' in ' + src);
       p++;
     };
-    var BIN = { '<': 'lt', '<=': 'le', '>': 'gt', '>=': 'ge', '==': 'eq', '!=': 'ne', '+': 'add', '-': 'sub', '*': 'mul', '/': 'div', '%': 'mod' };
+    var BIN = { '<': 'lt', '<=': 'le', '>': 'gt', '>=': 'ge', '==': 'eq', '!=': 'ne', '+': 'add', '-': 'sub', '*': 'mul', '/': 'div', '%': 'mod', '&': 'band', '|': 'bor' };
     function level(ops, next) {
       return function () {
         var a = next();
@@ -279,12 +285,15 @@
     }
     function unary() {
       if (isOp('-')) { p++; return { k: 'neg', a: unary() }; }
+      if (isOp('~')) { p++; return { k: 'bnot', a: unary() }; }
       if (isOp('+')) { p++; return unary(); }
       return power();
     }
     var mul = level(['*', '/', '%'], unary);
     var add = level(['+', '-'], mul);
-    var cmp = level(['<', '<=', '>', '>=', '==', '!='], add);
+    var rel = level(['<', '<=', '>', '>=', '==', '!='], add);
+    var band = level(['&'], rel);
+    var cmp = level(['|'], band);
     function primary() {
       var tk = toks[p++];
       if (tk.t === 'num') return { k: 'num', v: tk.v };
@@ -455,6 +464,7 @@
       case 'num': return this.constant(Math.fround(a.v));
       case 'str': throw new Error('string "' + a.v + '" used as a value');
       case 'neg': return this.node('neg', [this.expr(a.a, scope)]);
+      case 'bnot': return this.node('bnot', [this.expr(a.a, scope)]);
       case 'bin': return this.node(a.op, [this.expr(a.a, scope), this.expr(a.b, scope)]);
       case 'id': {
         var v = scope.lookup(this, a.v);
@@ -774,6 +784,108 @@
       { seed: h.konst('seed', 1) >>> 0, amplitude: fr(h.konst('amplitude', 1)) });
   };
 
+  // terrace{value, offset, width, strength}, as NoiseOperations::Terrace:
+  // flat steps of the given width, each rising to the next over the part of
+  // the step past `strength`.
+  BUILTIN_EXT.terrace = function (b, a, scope, h) {
+    return b.node('terrace', [h.arg('value'), h.arg('strength')], [fr(h.konst('offset')), fr(h.konst('width'))]);
+  };
+  function evalTerrace(nd, a, n, alloc) {
+    var off = nd.extra[0], w = nd.extra[1], out = alloc();
+    var v = arr(a[0], n), st = a[1];
+    for (var i = 0; i < n; i++) {
+      var t = fr(fr(v[i] - off) / w), f = Math.floor(t), frac = fr(t - f);
+      var s = typeof st === 'number' ? st : st[i];
+      var up = s < frac ? fr(fr(frac - s) / fr(1 - s)) : 0;
+      out[i] = fr(fr(fr(up + f) * w) + off);
+    }
+    return out;
+  }
+
+  // voronoi_cell_id / _spot_noise / _facet_noise / _pyramid_noise, as
+  // NoiseOperations::VoronoiNoise. Each grid cell holds one point, placed by
+  // Bob Jenkins' integer hash of the cell and seed (seed0 + seed1):
+  // ((1 - jitter) / 2 + jitter * u) within the cell, plus an id in [0, 1).
+  // cell_id is the nearest point's id, spot the distance to it (in cells),
+  // facet the gap to the second nearest, pyramid the distance to the cell's
+  // edge (euclidean only so far).
+  function jenkinsHead(a) {
+    a = (a + 0x7ed55d16 + (a << 12)) >>> 0;
+    a = ((a ^ 0xc761c23c) ^ (a >>> 19)) >>> 0;
+    a = (a + 0x165667b1 + (a << 5)) >>> 0;
+    a = ((a + 0xd3a2646c) ^ (a << 9)) >>> 0;
+    return (a + 0xfd7046c5 + (a << 3)) >>> 0;
+  }
+  function jenkins(a) { a = jenkinsHead(a); return ((a ^ 0xb55a4f09) ^ (a >>> 16)) >>> 0; }
+  function voronoiCell(seed, cx, cy, jitter) {
+    var ry = ((cy << 16) | (cy >>> 16)) >>> 0;
+    var hy = jenkinsHead(ry), hx = jenkinsHead(cx >>> 0);
+    var k = (((hx ^ hy) >>> 16) ^ seed ^ hy ^ hx) >>> 0;
+    var base = fr(fr(1 - jitter) * 0.5);
+    return [
+      fr(base + fr(jitter * fr(jenkins(k) * 2.3283064365386963e-10))),
+      fr(base + fr(jitter * fr(jenkins((k + 1) >>> 0) * 2.3283064365386963e-10))),
+      fr(jenkins((k + 2) >>> 0) * 2.3283064365386963e-10),
+    ];
+  }
+  var VORONOI_DIST = {
+    euclidean: function (dx, dy) { return fr(Math.sqrt(fr(fr(dx * dx) + fr(dy * dy)))); },
+    manhattan: function (dx, dy) { return fr(Math.abs(dx) + Math.abs(dy)); },
+    chebyshev: function (dx, dy) { return Math.max(Math.abs(dx), Math.abs(dy)); },
+    minkowski3: function (dx, dy) {
+      dx = Math.abs(dx); dy = Math.abs(dy);
+      return gameFastPow(fr(fr(fr(dx * dx) * dx) + fr(fr(dy * dy) * dy)), 0.3333333432674408);
+    },
+  };
+  function evalVoronoi(nd, a, n, alloc) {
+    var e = nd.extra, out = alloc();
+    var xs = arr(a[0], n), ys = arr(a[1], n);
+    var dist = VORONOI_DIST[e.type], g = e.grid, J = e.jitter, cache = nd.cache || (nd.cache = new Map());
+    var cellAt = function (cx, cy) {
+      var key = cx + ',' + cy, c = cache.get(key);
+      if (!c) { c = voronoiCell(e.seed, cx, cy, J); if (cache.size > 65536) cache.clear(); cache.set(key, c); }
+      return c;
+    };
+    for (var i = 0; i < n; i++) {
+      var qx = fr(xs[i] / g), qy = fr(ys[i] / g), cx = Math.floor(qx), cy = Math.floor(qy);
+      var d1 = Infinity, d2 = Infinity, id = 0, ax = 0, ay = 0, pts = [];
+      for (var j = cy - 1; j <= cy + 1; j++) for (var k = cx - 1; k <= cx + 1; k++) {
+        var c = cellAt(k, j), px = fr(k + c[0]), py = fr(j + c[1]);
+        var d = dist(fr(qx - px), fr(qy - py));
+        if (e.mode === 'pyramid') pts.push(px, py);
+        if (d < d1) { d2 = d1; d1 = d; id = c[2]; ax = px; ay = py; } else if (d < d2) d2 = d;
+      }
+      if (e.mode === 'cell_id') out[i] = id;
+      else if (e.mode === 'spot') out[i] = d1;
+      else if (e.mode === 'facet') out[i] = fr(d2 - d1);
+      else {
+        var best = Infinity;
+        for (var m = 0; m < pts.length; m += 2) {
+          var bx = pts[m], by = pts[m + 1];
+          if (bx === ax && by === ay) continue;
+          var l = Math.hypot(bx - ax, by - ay);
+          var v = ((qx - bx) * (qx - bx) + (qy - by) * (qy - by) - (qx - ax) * (qx - ax) - (qy - ay) * (qy - ay)) / (2 * l);
+          if (v < best) best = v;
+        }
+        out[i] = best;
+      }
+    }
+    return out;
+  }
+  ['cell_id', 'spot_noise', 'facet_noise', 'pyramid_noise'].forEach(function (name) {
+    BUILTIN_EXT['voronoi_' + name] = function (b, a, scope, h) {
+      var t = h.raw('distance_type', null);
+      var type = t && t.k === 'str' ? t.v : 'euclidean';
+      if (!VORONOI_DIST[type]) throw new Error('voronoi: unknown distance type ' + type);
+      var mode = name.replace('_noise', '');
+      if (mode === 'pyramid' && type !== 'euclidean') throw new Error('voronoi_pyramid_noise with ' + type + ' distance is not supported here');
+      return b.node('voronoi', [h.arg('x'), h.arg('y')], {
+        mode: mode, type: type, seed: ((h.konst('seed0') >>> 0) + h.seed1()) >>> 0,
+        grid: fr(h.konst('grid_size')), jitter: fr(h.konst('jitter', 1)),
+      });
+    };
+  });
+
   // ------------------------------------------------------------- evaluation
 
   function Program(b, outputs) {
@@ -811,7 +923,7 @@
       vals[id] = v;
       for (var j = 0; j < nd.args.length; j++) {
         var a = nd.args[j];
-        if (this.last[a] === at && typeof vals[a] !== 'number') { pool.push(vals[a]); vals[a] = undefined; }
+        if (this.last[a] === at && vals[a] && typeof vals[a] !== 'number') { pool.push(vals[a]); vals[a] = undefined; }
       }
     }
     return this.outputs.map(function (o) {
@@ -876,9 +988,9 @@
     out.fill(0);
     if (typeof p === 'number') {
       var amps = [], norm = 0;
-      for (var k = 0; k < oct; k++) { amps.push(Math.pow(p, oct - 1 - k)); norm += amps[k] * amps[k]; }
-      norm = Math.sqrt(norm);
-      for (k = 0; k < oct; k++) basisAdd(out, xs, ys, n, e[0], e[1], 0, e[3] / Math.pow(2, k), 17.17 * k, amps[k] / norm * e[4]);
+      for (var k = 0; k < oct; k++) { amps.push(gamePow(p, oct - 1 - k)); norm = fr(norm + fr(amps[k] * amps[k])); }
+      norm = fr(Math.sqrt(norm));
+      for (k = 0; k < oct; k++) basisAdd(out, xs, ys, n, e[0], e[1], 0, e[3] / Math.pow(2, k), 17.17 * k, fr(fr(amps[k] / norm) * e[4]));
     } else {
       var w = new Float32Array(n), nn = new Float64Array(n);
       for (k = 0; k < oct; k++) {
@@ -933,6 +1045,8 @@
   EVAL.distx = function (nd, a, n, alloc) { return nearest(nd, a, n, alloc, 1); };
   EVAL.disty = function (nd, a, n, alloc) { return nearest(nd, a, n, alloc, 2); };
   EVAL.spot = evalSpot;
+  EVAL.voronoi = evalVoronoi;
+  EVAL.terrace = evalTerrace;
   EVAL.rpenalty = evalPenalty;
   EVAL.ifelse = function (nd, a, n, alloc) {
     var o = alloc(), c = a[0], x = a[1], y = a[2];

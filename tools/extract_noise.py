@@ -53,21 +53,25 @@ local function expr(p)
   return {expression = p.expression, local_expressions = p.local_expressions, local_functions = p.local_functions,
     parameters = p.parameters}
 end
-local chart = data.raw["utility-constants"]["default"].chart
+local util = data.raw["utility-constants"]["default"]
+local chart = util.chart
 local out = {noise_expression = {}, noise_function = {}, tile = {}, entity = {}, planet = {},
+  default_collision_masks = util.default_collision_masks,
   chart = {tree = chart.default_color_by_type and chart.default_color_by_type.tree,
     enemy = chart.default_enemy_color, enemy_territory = chart.default_enemy_territory_color}}
 for n, p in pairs(data.raw["noise-expression"] or {}) do out.noise_expression[n] = expr(p) end
 for n, p in pairs(data.raw["noise-function"] or {}) do out.noise_function[n] = expr(p) end
 for n, p in pairs(data.raw["tile"]) do
-  if p.autoplace then out.tile[n] = {order = p.order, map_color = p.map_color, autoplace = p.autoplace} end
+  if p.autoplace then out.tile[n] = {order = p.order, map_color = p.map_color, autoplace = p.autoplace,
+    collision_mask = p.collision_mask} end
 end
 for tname, list in pairs(data.raw) do
   if tname ~= "tile" and tname ~= "optimized-decorative" then
     for n, p in pairs(list) do
       if type(p) == "table" and p.autoplace then
         out.entity[n] = {type = tname, autoplace = p.autoplace, map_color = p.map_color,
-          enemy_map_color = p.enemy_map_color, collision_box = p.collision_box, order = p.order}
+          enemy_map_color = p.enemy_map_color, collision_box = p.collision_box, order = p.order,
+          collision_mask = p.collision_mask, flags = p.flags}
       end
     end
   end
@@ -124,15 +128,19 @@ def slim(data):
         out["noise_function"][n] = drop_none(e)
     for n, t in data["tile"].items():
         a = t["autoplace"]
-        out["tile"][n] = drop_none({"order": t.get("order"), "color": colour(t["map_color"])[:3],
+        layers = sorted(((t.get("collision_mask") or {}).get("layers") or {}).keys())
+        out["tile"][n] = drop_none({"order": t.get("order"), "color": colour(t["map_color"])[:3], "layers": layers,
                                     "autoplace": drop_none({k: a.get(k) for k in ("probability_expression", "local_expressions", "local_functions")})})
     for n, e in data["entity"].items():
         a = e["autoplace"]
+        mask = e.get("collision_mask") or (data.get("default_collision_masks") or {}).get(e["type"]) or {}
         out["entity"][n] = drop_none({
             "type": e["type"], "order": e.get("order"), "color": colour(e.get("map_color")),
-            "box": e.get("collision_box"),
+            "box": e.get("collision_box"), "layers": sorted((mask.get("layers") or {}).keys()),
+            "offgrid": "placeable-off-grid" in (e.get("flags") or []) or None,
             "autoplace": drop_none({k: a.get(k) for k in ("control", "order", "force", "probability_expression",
-                                                           "richness_expression", "local_expressions", "local_functions", "tile_restriction")}),
+                                                           "richness_expression", "local_expressions", "local_functions", "tile_restriction",
+                                                           "placement_density")}),
         })
     for n, p in data["planet"].items():
         m = p.get("map_gen_settings")
