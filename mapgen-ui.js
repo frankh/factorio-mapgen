@@ -5,7 +5,7 @@
 //     modset: 'space-age' | 'vanilla',
 //     exchangeString: '>>>…<<<',            // optional starting settings
 //     onPlay(result) {}, onBack() {},       // result: {exchangeString, mapGenSettings, mapSettings}
-//     iconBase: 'assets/',                  // optional folder of real game icons (see tools/mapgen)
+//     iconBase: '/icons/',                  // optional: where the game icons live (default: icons/ next to this script)
 //   });
 //
 // Needs vendor/pako.min.js, mapexchange.js and gamedata.js loaded first.
@@ -79,12 +79,12 @@
     scrap: '#8e6c4e', 'lithium-brine': '#d6ecea', 'fluorine-vent': '#79c8ee',
   };
 
-  const SVG = {
-    shuffle: '<svg viewBox="0 0 20 20" fill="none" stroke="#1c1c1c" stroke-width="2"><path d="M2 6h4l8 8h4M2 14h4l8-8h4"/><path d="M15 3l3 3-3 3M15 11l3 3-3 3" stroke-linejoin="round"/></svg>',
-    import: '<svg viewBox="0 0 20 20" fill="none" stroke="#1c1c1c" stroke-width="2"><path d="M5 9a6 6 0 1 1 1 7"/><path d="M2 6l3 4 4-3" stroke-linejoin="round"/><path d="M8 17h-3v-3"/></svg>',
-    export: '<svg viewBox="0 0 20 20" fill="none" stroke="#1c1c1c" stroke-width="2"><path d="M15 9a6 6 0 1 0-1 7"/><path d="M18 6l-3 4-4-3" stroke-linejoin="round"/><path d="M12 17h3v-3"/></svg>',
-    warning: '<svg viewBox="0 0 20 20" width="20" height="20"><path d="M10 2l9 16H1z" fill="#1c1c1c"/><path d="M10 7v5" stroke="#8e8e8e" stroke-width="2.2"/><circle cx="10" cy="15" r="1.3" fill="#8e8e8e"/></svg>',
-  };
+  // The game's GUI glyphs (icons/*.png), drawn as masks so CSS sets their colour.
+  const ICON_BASE = (() => {
+    const src = document.currentScript && document.currentScript.src;
+    return src ? src.replace(/[^/]*$/, '') + 'icons/' : 'icons/';
+  })();
+  const glyph = (name) => el('span', { class: 'fmg-glyph fmg-glyph-' + name, style: { '--glyph': 'url(' + ICON_BASE + name + '.png)' } });
 
   function el(tag, attrs, ...kids) {
     const e = document.createElement(tag);
@@ -121,13 +121,14 @@
     t(section, key, ...args) {
       let s = (this.L[section] || {})[key];
       if (s === undefined) return key;
-      args.forEach((a, i) => { s = s.split('__' + (i + 1) + '__').join(a); });
-      // __plural_for_parameter__1__{1=option|rest=options}__
+      // __plural_for_parameter__1__{1=option|rest=options}__ first: it
+      // contains "__1__" itself.
       s = s.replace(/__plural_for_parameter__(\d+)__\{([^}]*)\}__/g, (m, n, alts) => {
         const v = Number(args[Number(n) - 1]);
         for (const alt of alts.split('|')) { const [cond, text] = alt.split('='); if (cond === 'rest' || Number(cond) === v) return text; }
         return '';
       });
+      args.forEach((a, i) => { s = s.split('__' + (i + 1) + '__').join(a); });
       return s;
     }
     get modsetData() { return this.data.modsets[this.modset]; }
@@ -235,6 +236,7 @@
       const keepScroll = this.panel ? this.panel.scrollTop : 0;
       this.root.textContent = '';
       this.tooltip = this.tooltip || el('div', { class: 'fmg-tooltip', hidden: true });
+      this.tooltip.hidden = true; // its element may be about to go
       document.body.append(this.tooltip);
       const md = this.modsetData;
       const modified = this.modifiedOptions();
@@ -245,8 +247,10 @@
       const resetBtn = el('button', {
         class: 'fmg-btn fmg-reset', type: 'button', disabled: !modified.length,
         onclick: () => { this.loadPreset(this.presetName); this.render(); },
-      });
-      this.tip(resetBtn, () => modified.length ? this.t('gui-map-generator', 'reset-to-preset', modified.length) : this.t('gui-map-generator', 'reset-to-preset-disabled'));
+      }, glyph('reset'));
+      // A disabled button gets no mouse events, so the tooltip sits on a wrapper.
+      const resetWrap = el('span', { class: 'fmg-reset-wrap' }, resetBtn);
+      this.tip(resetWrap, () => modified.length ? this.t('gui-map-generator', 'reset-to-preset', modified.length) : this.t('gui-map-generator', 'reset-to-preset-disabled'));
       const seedInput = el('input', {
         class: 'fmg-text', value: String(this.seed), inputmode: 'numeric', 'aria-label': 'Seed', style: { width: '148px' },
         oninput: (e) => {
@@ -256,7 +260,7 @@
           if (ok) this.seed = Number(v);
         },
       });
-      const shuffle = el('button', { class: 'fmg-btn fmg-icon', type: 'button', html: SVG.shuffle, onclick: () => { this.seed = randomSeed(); seedInput.value = String(this.seed); seedInput.classList.remove('fmg-invalid'); } });
+      const shuffle = el('button', { class: 'fmg-btn fmg-icon', type: 'button', onclick: () => { this.seed = randomSeed(); seedInput.value = String(this.seed); seedInput.classList.remove('fmg-invalid'); } }, glyph('shuffle'));
       this.tip(shuffle, () => this.t('gui-map-generator', 'randomize-map-seed'));
       const preset = md.presets.find((p) => p.name === this.presetName);
 
@@ -268,20 +272,24 @@
       ];
       this.panel = el('div', { class: 'fmg-tabpanel', role: 'tabpanel' }, this.renderTab(this.tab));
 
-      const importBtn = el('button', { class: 'fmg-btn fmg-icon', type: 'button', html: SVG.import, onclick: () => this.openImport() });
-      const exportBtn = el('button', { class: 'fmg-btn fmg-icon', type: 'button', html: SVG.export, onclick: () => this.openExport() });
+      const importBtn = el('button', { class: 'fmg-btn fmg-icon', type: 'button', onclick: () => this.openImport() }, glyph('import'));
+      const exportBtn = el('button', { class: 'fmg-btn fmg-icon', type: 'button', onclick: () => this.openExport() }, glyph('export'));
       this.tip(importBtn, () => this.t('gui-map-generator', 'import-exchange-string-tt'));
       this.tip(exportBtn, () => this.t('gui-map-generator', 'export-exchange-string-tt'));
 
-      const previewBtn = el('button', { class: 'fmg-dialog-btn fmg-forward', type: 'button', disabled: !this.opts.onPreview, onclick: () => this.opts.onPreview && this.opts.onPreview(this.result()) },
-        el('span', { html: SVG.warning, style: { display: 'inline-flex' } }), this.t('gui-map-generator', 'show-preview'));
-      this.tip(previewBtn, () => this.t('gui-map-generator', 'show-preview-warning'));
+      const canPreview = !!this.opts.previewUrl;
+      const previewBtn = this.previewOpen
+        ? el('button', { class: 'fmg-dialog-btn fmg-back fmg-close-preview', type: 'button', onclick: () => { this.previewOpen = false; this.render(); } },
+          this.t('gui-map-generator', 'hide-preview'))
+        : el('button', { class: 'fmg-dialog-btn fmg-forward', type: 'button', disabled: !canPreview, onclick: () => { this.previewOpen = true; this.render(); } },
+          glyph('warning'), this.t('gui-map-generator', 'show-preview'));
+      if (!this.previewOpen) this.tip(previewBtn, () => this.t('gui-map-generator', 'show-preview-warning'));
 
       const win = el('div', { class: 'fmg-window', role: 'dialog', 'aria-label': this.t('gui-map-generator', 'title') },
         el('div', { class: 'fmg-titlebar' }, el('div', { class: 'fmg-title' }, this.t('gui-map-generator', 'title')), el('div', { class: 'fmg-drag' })),
-        el('div', { class: 'fmg-deep' },
+        el('div', { class: 'fmg-body' }, el('div', { class: 'fmg-deep fmg-main' },
           el('div', { class: 'fmg-subheader' },
-            el('div', { class: 'fmg-dropdown', style: { width: '232px' } }, presetSelect), resetBtn,
+            el('div', { class: 'fmg-dropdown', style: { width: '232px' } }, presetSelect), resetWrap,
             el('div', { class: 'fmg-spacer' }),
             el('span', { class: 'fmg-label-bold fmg-seed-label' }, this.t('gui-map-generator', 'map-seed')), seedInput, shuffle),
           el('div', { class: 'fmg-desc' }, preset ? preset.description : ''),
@@ -291,6 +299,7 @@
           }, label))),
           this.panel,
           el('div', { class: 'fmg-exchange' }, el('span', { class: 'fmg-label-bold' }, this.t('gui', 'map-exchange-string')), importBtn, exportBtn)),
+        this.previewOpen ? this.renderPreview() : null),
         el('div', { class: 'fmg-footer' },
           el('button', { class: 'fmg-dialog-btn fmg-back', type: 'button', onclick: () => this.opts.onBack && this.opts.onBack() }, this.t('gui', 'cancel')),
           el('div', { class: 'fmg-drag' }),
@@ -299,11 +308,75 @@
           el('button', { class: 'fmg-dialog-btn fmg-confirm', type: 'button', onclick: () => this.play() }, this.opts.playLabel || this.t('gui-map-generator', 'play'))));
       this.root.append(win);
       this.panel.scrollTop = keepScroll;
+      if (this.previewOpen) this.schedulePreview();
       if (this.opts.onChange) this.opts.onChange(this);
     }
 
     // Re-render after a change without losing the scroll position.
     changed() { this.render(); }
+
+    // ---- preview (rendered by the server with the real game) ----
+
+    previewRequest() {
+      const mgs = this.result().mapGenSettings;
+      return JSON.stringify({ map_gen_settings: mgs, space_age: this.modset === 'space-age', planet: this.previewPlanet || 'nauvis', size: 512 });
+    }
+
+    renderPreview() {
+      const G = (k) => this.t('gui-map-generator', k);
+      const st = this.previewState || (this.previewState = { auto: true });
+      const planets = this.modsetData.planets;
+      const img = st.url ? el('img', { class: 'fmg-preview-img', src: st.url, alt: '' }) : null;
+      const status = st.loading ? el('div', { class: 'fmg-preview-status' }, '…')
+        : st.error ? el('div', { class: 'fmg-preview-status fmg-error' }, G('preview-error') + (st.error ? '\n' + st.error : '')) : null;
+      const refresh = st.auto && !st.error ? null : el('button', { class: 'fmg-btn', type: 'button', onclick: () => this.loadPreview(true) }, this.t('gui', 'refresh'));
+      const auto = this.checkbox(st.auto, (v) => { st.auto = v; }, G('preview-auto-update'), G('preview-auto-update-tt'));
+      return el('div', { class: 'fmg-deep fmg-preview' },
+        el('div', { class: 'fmg-subheader' },
+          planets.length > 1 ? el('div', { class: 'fmg-dropdown', style: { width: '160px' } }, el('select', {
+            'aria-label': 'Planet', onchange: (e) => { this.previewPlanet = e.target.value; this.render(); },
+          }, planets.map((p) => el('option', { value: p.name, selected: p.name === (this.previewPlanet || 'nauvis') }, p.label)))) : null,
+          el('div', { class: 'fmg-spacer' }), auto, refresh),
+        el('div', { class: 'fmg-preview-frame' + (st.loading ? ' fmg-loading' : '') }, img, status));
+    }
+
+    schedulePreview() {
+      const st = this.previewState;
+      if (!st || (!st.auto && (st.url || st.error))) return;
+      clearTimeout(this.previewTimer);
+      this.previewTimer = setTimeout(() => this.loadPreview(false), 400);
+    }
+
+    loadPreview(force) {
+      const st = this.previewState;
+      const body = this.previewRequest();
+      if (!force && body === st.lastBody) return;
+      st.lastBody = body;
+      const seq = (this.previewSeq = (this.previewSeq || 0) + 1);
+      st.loading = true; st.error = '';
+      this.updatePreviewView();
+      const headers = { 'Content-Type': 'application/json' };
+      if (this.opts.csrf) headers['X-CSRF-Token'] = this.opts.csrf;
+      fetch(this.opts.previewUrl, { method: 'POST', headers, body, credentials: 'same-origin' })
+        .then((r) => (r.ok ? r.blob() : r.text().then((t) => { throw new Error(t.trim()); })))
+        .then((blob) => {
+          if (seq !== this.previewSeq) return;
+          if (st.url) URL.revokeObjectURL(st.url);
+          st.url = URL.createObjectURL(blob); st.loading = false;
+          this.updatePreviewView();
+        })
+        .catch((e) => {
+          if (seq !== this.previewSeq) return;
+          st.loading = false; st.error = e.message || ''; st.lastBody = '';
+          this.updatePreviewView();
+        });
+    }
+
+    // Swap just the preview pane, so typing and dragging aren't disturbed.
+    updatePreviewView() {
+      const old = this.root.querySelector('.fmg-preview');
+      if (old && this.previewOpen) old.replaceWith(this.renderPreview());
+    }
 
     play() {
       const r = this.result();
@@ -327,22 +400,21 @@
     moveTip(e) { this.tooltip.style.left = (e.clientX + 16) + 'px'; this.tooltip.style.top = (e.clientY + 20) + 'px'; }
 
     label(text, tooltip) {
-      const span = el('span', {}, text, tooltip ? el('span', { class: 'fmg-i' }) : null);
+      const span = el('span', {}, text, tooltip ? el('img', { class: 'fmg-i', src: ICON_BASE + 'info.png', alt: '' }) : null);
       if (tooltip) this.tip(span, tooltip);
       return span;
     }
 
+    get iconBase() { return this.opts.iconBase || ICON_BASE; }
     icon(type, name) {
-      if (this.opts.iconBase) return el('img', { class: 'fmg-ico fmg-sprite', src: this.opts.iconBase + type + '/' + name + '.png', alt: '' });
+      if (type === 'entity' && ORE[name]) return el('img', { class: 'fmg-ico fmg-sprite', src: this.iconBase + 'entity/' + name + '.png', alt: '' });
       if (ORE[name]) return el('span', { class: 'fmg-ico fmg-ore', style: { '--ore': ORE[name] } });
       return el('span', { class: 'fmg-ico' });
     }
     planets(c) {
       return el('span', {}, c.planets.map((p) => {
         const planet = this.modsetData.planets.find((x) => x.name === p);
-        const node = this.opts.iconBase
-          ? el('img', { class: 'fmg-planet fmg-sprite', src: this.opts.iconBase + 'space-location/' + p + '.png', alt: planet ? planet.label : p })
-          : el('span', { class: 'fmg-planet', 'data-planet': p });
+        const node = el('img', { class: 'fmg-planet fmg-sprite', src: this.iconBase + 'planet/' + p + '.png', alt: planet ? planet.label : p });
         this.tip(node, planet ? planet.label : p);
         return node;
       }));
@@ -470,7 +542,7 @@
         const fk = 'control:' + kind + ':frequency', bk = 'control:' + kind + ':bias';
         return el('tr', {},
           el('td', {}, this.label(G(labelKey), G(tipKey))),
-          el('td', {}, el('span', { class: 'fmg-planet', 'data-planet': 'nauvis' })),
+          el('td', {}, this.planets({ planets: ['nauvis'] })),
           el('td', { class: 'fmg-col-slider' }, this.slider({
             values: NOTCHES,
             get: () => 1 / (pen[fk] !== undefined ? Number(pen[fk]) : 1),

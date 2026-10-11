@@ -110,19 +110,25 @@
 .fmg-table.fmg-wide-first col.fmg-c-a { width: 123px; }
 .fmg-table.fmg-wide-first col.fmg-c-b { width: 122px; }
 
-/* info "i" marker after a label with a tooltip */
-.fmg-i {
-  display: inline-block; width: 8px; height: 8px; margin-left: 4px; vertical-align: 1px; border-radius: 50%;
-  background: radial-gradient(circle at 50% 30%, #a9d6ff, #4d9ae6); position: relative;
-}
-.fmg-i::after { content: ''; position: absolute; left: 3.5px; top: 3px; width: 1px; height: 4px; background: #1c2f44; }
+/* info "i" marker after a label with a tooltip (the game's own icon) */
+.fmg-i { display: inline-block; width: 8px; height: 8px; margin-left: 4px; vertical-align: 1px; }
+
+/* The game's GUI glyphs, as masks (icons/*.png, cut from 175% UI scale). */
+.fmg-glyph { display: inline-block; flex: none; background: #1c1c1c; -webkit-mask: var(--glyph) center / contain no-repeat; mask: var(--glyph) center / contain no-repeat; }
+.fmg-glyph-shuffle, .fmg-glyph-reset { width: 17px; height: 14px; }
+.fmg-glyph-import, .fmg-glyph-export { width: 16px; height: 15px; }
+.fmg-glyph-warning { width: 20px; height: 20px; }
+.fmg-reset:disabled .fmg-glyph { background: #3f1111; }
+.fmg-dialog-btn:disabled .fmg-glyph { background: #555; }
+.fmg-reset-wrap { display: inline-flex; }
 
 /* ---- checkboxes ---- */
 .fmg-check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
 .fmg-check input { appearance: none; -webkit-appearance: none; margin: 0; width: 16px; height: 16px; flex: none;
   background: #8e8e8e; border-radius: 2px; box-shadow: inset 0 1px 0 #b8b8b8, inset 0 -1px 0 #555, 0 0 0 1px #1d1d1d; cursor: pointer; position: relative; }
 .fmg-check input:checked { background: linear-gradient(#f5b345, #e39827); box-shadow: inset 0 1px 0 #ffd590, inset 0 -1px 0 #9a5e0b, 0 0 0 1px #1d1d1d; }
-.fmg-check input:checked::after { content: ''; position: absolute; left: 5px; top: 1px; width: 5px; height: 10px; border: solid #1c1c1c; border-width: 0 2.5px 2.5px 0; transform: rotate(40deg); }
+.fmg-check input:checked::after { content: ''; position: absolute; left: 4px; top: 4px; width: 8px; height: 8px; background: #1c1c1c;
+  -webkit-mask: url(icons/check.png) center / contain no-repeat; mask: url(icons/check.png) center / contain no-repeat; }
 .fmg-check input:hover { box-shadow: 0 0 0 1px #1d1d1d, 0 0 4px 1px rgba(249,180,75,.8); }
 .fmg-check input:disabled { opacity: .5; }
 
@@ -240,22 +246,26 @@
 .fmg-error { color: #ff8a8a; margin-top: 6px; min-height: 18px; }
 
 /* ---- icons drawn in CSS (stand-ins for the game's sprites) ---- */
-.fmg-planet { display: inline-block; width: 26px; height: 26px; border-radius: 50%; vertical-align: middle;
-  box-shadow: inset -4px -3px 6px rgba(0,0,0,.6), 0 0 2px rgba(0,0,0,.6); background-size: cover; }
+.fmg-planet { display: inline-block; width: 30px; height: 30px; vertical-align: middle; }
 .fmg-planet + .fmg-planet { margin-left: 2px; }
-.fmg-planet[data-planet=nauvis] { background: radial-gradient(circle at 35% 35%, #d2c189 0 12%, #4f9c8a 13% 30%, #3f7f8f 31% 52%, #b59a5a 53% 60%, #2f6d7c 61%); }
-.fmg-planet[data-planet=vulcanus] { background: radial-gradient(circle at 35% 35%, #f7a35a, #b8471c 45%, #5a1e0c 75%); }
-.fmg-planet[data-planet=gleba] { background: radial-gradient(circle at 35% 35%, #f4e58e, #c9a24e 40%, #8b6f3a 70%, #c25c3a); }
-.fmg-planet[data-planet=fulgora] { background: radial-gradient(circle at 35% 35%, #f3a0a0, #b9454f 45%, #4a2a6e 80%); }
-.fmg-planet[data-planet=aquilo] { background: radial-gradient(circle at 35% 35%, #e9f3ff, #5b78b8 45%, #1b2346 80%); }
 .fmg-ico { display: inline-block; width: 18px; height: 18px; flex: none; vertical-align: middle; background-size: contain; background-repeat: no-repeat; }
-.fmg-ico.fmg-ore { position: relative; }
-.fmg-ico.fmg-ore::before, .fmg-ico.fmg-ore::after { content: ''; position: absolute; border-radius: 40% 55% 45% 50%; background: var(--ore, #888);
-  box-shadow: inset -2px -2px 0 rgba(0,0,0,.35), inset 1px 1px 0 rgba(255,255,255,.35); }
-.fmg-ico.fmg-ore::before { left: 1px; top: 6px; width: 11px; height: 10px; }
-.fmg-ico.fmg-ore::after { left: 8px; top: 2px; width: 11px; height: 11px; }
 .fmg-sprite { image-rendering: auto; }
 
 /* Full-screen host for the window on other pages (see newserver.js). */
 .fmg-overlay { position: fixed; inset: 0; z-index: 100; overflow: auto; display: flex; justify-content: center; align-items: flex-start;
   padding: 24px 8px; background: rgba(12, 10, 9, .88); }
+
+/* ---- preview: the window widens to show the map on the right ---- */
+.fmg-body { display: flex; gap: 8px; align-items: stretch; }
+.fmg-main { flex: none; width: 661px; }
+.fmg-window:has(.fmg-preview) { width: auto; }
+.fmg-preview { flex: none; width: 476px; display: flex; flex-direction: column; }
+.fmg-preview .fmg-subheader { gap: 8px; }
+.fmg-preview .fmg-check { color: #fff; }
+.fmg-preview-frame { position: relative; flex: none; height: 476px; display: flex; align-items: flex-start; justify-content: center; padding: 8px; background: #0f0f0f;
+  box-shadow: inset 0 0 0 1px #000; min-height: 476px; }
+.fmg-preview-img { display: block; width: 460px; height: 460px; image-rendering: pixelated; }
+.fmg-preview-frame.fmg-loading .fmg-preview-img { opacity: .55; }
+.fmg-preview-status { position: absolute; left: 0; right: 0; top: 45%; text-align: center; padding: 0 24px; white-space: pre-line; color: #fff; text-shadow: 0 1px 2px #000; }
+.fmg-preview-status.fmg-error { color: #ff9a9a; }
+.fmg-close-preview { min-width: 160px; }

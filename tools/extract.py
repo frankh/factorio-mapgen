@@ -11,8 +11,9 @@ factoriotools/factorio image. Only the headless build is needed for the data.
 
 --icons DIR also copies the resource and planet icons the page shows, as
 DIR/<type>/<name>.png (64x64, the first mipmap). The headless build has no
-graphics, so this needs a full game install (e.g. your Steam copy); point the
-page's iconBase option at DIR. Needs Pillow.
+graphics, so this needs a full game install (e.g. your Steam copy). The page
+ships these in web/static/mapgen/icons/ already; use this to refresh them.
+Needs Pillow.
 """
 import glob
 import json
@@ -37,7 +38,10 @@ local function add(kind, p)
   elseif p.icons and p.icons[1] then out[#out + 1] = {kind, p.name, p.icons[1].icon, p.icons[1].icon_size or 64} end
 end
 for _, p in pairs(data.raw["resource"] or {}) do add("entity", p) end
-for _, p in pairs(data.raw["planet"] or {}) do add("space-location", p) end
+-- The map generator shows planets by their starmap icons.
+for _, p in pairs(data.raw["planet"] or {}) do
+  if p.starmap_icon then out[#out + 1] = {"planet", p.name, p.starmap_icon, p.starmap_icon_size or 64} else add("planet", p) end
+end
 log("MAPGEN-ICONS:" .. serpent.line(out, {comment = false}))
 """
 
@@ -159,7 +163,10 @@ def copy_icons(root, icons, dest):
             continue
         os.makedirs(os.path.join(dest, kind), exist_ok=True)
         size = int(size)
-        Image.open(src).crop((0, 0, size, size)).save(os.path.join(dest, kind, name + ".png"))
+        icon = Image.open(src).crop((0, 0, size, size))
+        if size != 64:
+            icon = icon.resize((64, 64), Image.LANCZOS)
+        icon.save(os.path.join(dest, kind, name + ".png"))
         copied += 1
     print("copied %d of %d icons to %s" % (copied, len(icons), dest))
 

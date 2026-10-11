@@ -77,15 +77,27 @@ re-run the tests against strings from the new version.
 
 Layout, sizes, colours, text and fonts follow the game (`core/prototypes/style.lua`,
 the locale files, and in-game screenshots compared at 150% and 175% UI
-scale). The game's sprites are not in the headless build, so icons, planets,
-slider thumbs and button bevels are CSS/SVG stand-ins.
+scale). The icons are the game's own:
 
-To use the real resource and planet icons, run the extractor against a full
-install (e.g. your Steam copy) with `--icons DIR`. Then pass `iconBase: 'DIR/'`
-to `FactorioMapGen.mount`.
+- `icons/entity/` and `icons/planet/` are the resource icons and the starmap
+  planet icons the map generator shows (64x64, first mipmap).
+- `icons/*.png` are the GUI glyphs (reset, shuffle, import, export, warning,
+  check mark, info), cut from a 4K in-game screenshot at 175% UI scale and
+  used as masks so CSS can colour them per state.
 
-These parts were not verified against the game:
+`extract.py --icons DIR` refreshes the resource and planet icons from a full
+game install. The headless build has no graphics.
 
-- The ranges of the slider-plus-number rows on the Enemy and Advanced tabs. The game's ranges aren't in its data files, so these are estimates. Typed values are stored exactly.
-- Whether 2.0 lays out the Enemy tab exactly like the 2.1 screenshots. The rows come from 2.0's own text strings.
-- The map preview. The Preview button stays disabled unless an `onPreview` handler is given. The headless server can render previews with `--generate-map-preview`.
+The slider-plus-number rows on the Enemy and Advanced tabs use ranges chosen
+here, as the game's aren't in its data files; typed values are stored exactly.
+
+## Preview
+
+The Preview button posts the map gen settings to `POST /mapgen/preview`
+(`internal/control/preview.go`). The control plane renders it with the real
+headless game (`factorio --generate-map-preview`, about 3 to 5 seconds) and
+caches the PNG. On first use it fetches the game from the
+`factoriotools/factorio` image on Docker Hub, unpacking only `bin/` and
+`data/`, and checks for a newer build of the tag every few hours
+(`internal/mappreview`). That is why the image is Debian-based: the game needs
+glibc.
