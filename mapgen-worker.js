@@ -7,7 +7,7 @@
 // Messages out: {type: 'chunk', job, pass, cx, cy, w, h, pixels (RGBA)}
 //               {type: 'done', job}, {type: 'error', job, message}
 /* global importScripts, FactorioNoise, FactorioNoiseData, FactorioPreview */
-importScripts('noise.js?v=6', 'noisedata.js?v=6', 'preview.js?v=6');
+importScripts('noise.js?v=7', 'noisedata.js?v=7', 'preview.js?v=7');
 
 let current = 0;
 

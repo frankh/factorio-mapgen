@@ -146,9 +146,19 @@
 
     // Each chunk's tiles from pass 0, kept for pass 1's collision checks.
     var chunkTiles = new Map();
+    // The game evaluates a chunk as a grid, which its noise has a path for.
+    function chunkGrid(cx, cy) { return scale === 1 ? { x0: cx * CHUNK, y0: cy * CHUNK } : null; }
+    // Points from several chunks: each with its own chunk's corner.
+    function pointsGrid(xs, ys) {
+      if (scale !== 1) return null;
+      var n = xs.length, x0 = new Float32Array(n), y0 = new Float32Array(n);
+      for (var i = 0; i < n; i++) { x0[i] = Math.floor(xs[i] / CHUNK) * CHUNK; y0[i] = Math.floor(ys[i] / CHUNK) * CHUNK; }
+      return { x0: x0, y0: y0 };
+    }
+
     function terrain(cx, cy) {
       var p = positions(cx, cy), n = CHUNK * CHUNK;
-      var r = tileProg.run(p[0], p[1]);
+      var r = tileProg.run(p[0], p[1], chunkGrid(cx, cy));
       var px = new Uint8ClampedArray(n * 4), ids = new Int16Array(n);
       for (var k = 0; k < n; k++) {
         var best = -Infinity, bi = -1;
@@ -194,7 +204,7 @@
     // under its map_generator_bounding_box blocks it.
     function place(cx, cy, tl) {
       var p = positions(cx, cy), n = CHUNK * CHUNK;
-      var r = entProg.run(p[0], p[1]);
+      var r = entProg.run(p[0], p[1], chunkGrid(cx, cy));
       var seed = (Math.imul(cx, 7919) + Math.imul(cy, 7907) + 0x3fbe2c) >>> 0;
       var rng = new N.Taus88(seed < 342 ? 341 : seed);
       var placed = [];
@@ -439,7 +449,7 @@
         chunkTiles.delete(key);
         var m = ringX.length, xs = new Float32Array(m), ys = new Float32Array(m);
         for (k = 0; k < m; k++) { xs[k] = cx * CHUNK + ringX[k]; ys[k] = cy * CHUNK + ringY[k]; }
-        r = tileProg.run(xs, ys);
+        r = tileProg.run(xs, ys, pointsGrid(xs, ys));
         for (k = 0; k < m; k++) id[(ringY[k] + B) * W + ringX[k] + B] = argmax(r, k);
         for (var j = 0; j < CHUNK; j++) for (var i = 0; i < CHUNK; i++) {
           var t = inner[j * CHUNK + i];
@@ -448,7 +458,7 @@
       } else {
         xs = new Float32Array(W * W); ys = new Float32Array(W * W);
         for (j = 0; j < W; j++) for (i = 0; i < W; i++) { xs[j * W + i] = cx * CHUNK + i - B; ys[j * W + i] = cy * CHUNK + j - B; }
-        r = tileProg.run(xs, ys);
+        r = tileProg.run(xs, ys, pointsGrid(xs, ys));
         for (k = 0; k < W * W; k++) id[k] = argmax(r, k);
       }
       var at = function (tx, ty) {

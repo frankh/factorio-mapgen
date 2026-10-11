@@ -6,9 +6,12 @@
 //   var out = prog.run(xs, ys);          // Float32Arrays, one per output
 //
 // defs holds the game's noise_expression and noise_function prototypes (see
-// tools/mapgen/extract.py). Results match the game's own
-// LuaSurface.calculate_tile_properties to float precision; see
-// tools/mapgen/README.md for how each builtin was worked out.
+// tools/mapgen/extract_noise.py). Results match the game's own
+// LuaSurface.calculate_tile_properties to the bit for nearly every builtin
+// (Voronoi distances to float precision); see tools/mapgen/README.md for how
+// each was worked out. run(xs, ys, grid) with grid set for a chunk's
+// positions takes the game's grid path through the noise, as map generation
+// does.
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.FactorioNoise = factory();
@@ -76,44 +79,154 @@
     return t;
   }
 
-  var GX = new Float64Array(256), GY = new Float64Array(256);
-  for (var g = 0; g < 256; g++) {
-    GX[g] = 4.2 * Math.cos(g * 2 * Math.PI / 256);
-    GY[g] = 4.2 * Math.sin(g * 2 * Math.PI / 256);
-  }
-
   // seed1 picks the table set too: seed0 + 7 * (seed1 >> 8), seed1 & 255.
   function seedPair(seed0, seed1) {
     seed1 = seed1 >>> 0;
     return [(seed0 + 7 * (seed1 >>> 8)) >>> 0, seed1 & 255];
   }
 
-  // out[i] += amp * basis((x[i] + ox) * scale + lx, y[i] * scale)
-  function basisAdd(out, xs, ys, n, seed0, seed1, ox, scale, lx, amp) {
-    var sp = seedPair(seed0, seed1);
-    var T = tables(sp[0]);
-    var T1 = T[1], T2 = T[2], T3 = T[3];
-    var s = T[0][sp[1]];
-    var scalarAmp = typeof amp === 'number';
+  // The game's 256 gradients (Noise::defaultNoise, read from a running game:
+  // 4.2 at 256 angles, but not quite any formula's rounding), as (x, y)
+  // float pairs.
+  var GRAD = (function () {
+    var b64 = 'ZmaGQAAAAAAKXIZABhjTPfU8hkC/B1M+LQmGQHgxnj65wIVArMbSPqZjhUCvnQM/AfKEQL3DHT/ba4RAd9E3P0rRg0DZwlE/ZiKDQOGTaz9JX4JAS6CCPxGIgUCBYo8/35yAQJoOnD+xO39ApKKoP0kWfUCrHLU/2cl6QMV6wT+9VnhACrvNP1W9dUCU29k/Cf5yQIfa5T9EGXBACLbxP3kPbUBCbP0/H+FpQLR9BEC1jmZA2TAKQL0YY0Cvzg9AwH9fQFhWFUBNxFtA+sYaQPXmV0C9HyBAU+hTQM9fJUAEyU9AYYYqQKmJS0Cnki9A7CpHQNqDNEB4rUJAN1k5QP8RPkAAEj5AOFk5QHitQkDagzRA7CpHQKeSL0CpiUtAYYYqQAPJT0DPXyVAU+hTQLwfIED25ldA+sYaQEzEW0BYVhVAwH9fQK/OD0C9GGNA2jAKQLSOZkC0fQRAH+FpQENs/T94D21ABrbxP0QZcECH2uU/Cf5yQJPb2T9WvXVACbvNP71WeEDHesE/2cl6QKoctT9JFn1ApKKoP7E7f0CZDpw/35yAQIFijz8RiIFATaCCP0hfgkDgk2s/ZiKDQNvCUT9K0YNAddE3P9trhEC+wx0/AfKEQKydAz+mY4VAq8bSPrnAhUB+MZ4+LQmGQLgHUz71PIZAFBjTPQpchkA+IEW0ZmaGQAIY070KXIZArwdTvvU8hkB6MZ6+LQmGQKfG0r65wIVAsp0Dv6ZjhUC8wx2/AfKEQHvRN7/ba4RA2cJRv0rRg0Dek2u/ZiKDQEyggr9JX4JAgGKPvxGIgUCcDpy/35yAQKOiqL+xO39AqRy1v0kWfUDGesG/2cl6QAi7zb+9VnhAldvZv1W9dUCG2uW/Cf5yQAm28b9DGXBAP2z9v3oPbUC0fQTAIOFpQNowCsC1jmZAsc4PwLwYY0BXVhXAwX9fQPnGGsBNxFtAvh8gwPXmV0DOXyXAVOhTQGCGKsAEyU9Ap5IvwKmJS0DcgzTA6ypHQDZZOcB5rUJA/xE+wP8RPkB5rULANlk5QOsqR8DbgzRAqYlLwKeSL0AEyU/AYIYqQFToU8DNXyVA9eZXwL0fIEBNxFvA+cYaQMF/X8BXVhVAvBhjwLDOD0C1jmbA2jAKQCDhacC0fQRAeA9twEZs/T9EGXDACbbxPwn+csCG2uU/Vr11wJHb2T+8VnjADLvNP9nJesDFesE/SRZ9wKkctT+xO3/Ap6KoP9+cgMCbDpw/EYiBwIBijz9JX4LAR6CCP2Yig8Dlk2s/StGDwNjCUT/ba4TActE3PwHyhMDEwx0/pmOFwLGdAz+5wIXApcbSPi0JhsBoMZ4+9TyGwM0HUz4KXIbA+xfTPWZmhsA+IMW0ClyGwNcX0731PIbAuwdTvi0JhsCAMZ6+ucCFwJzG0r6mY4XArJ0DvwHyhMC/wx2/22uEwH7RN79L0YPA08JRv2Yig8Dhk2u/SF+CwE2ggr8RiIHAfWKPv9+cgMCZDpy/sTt/wKWiqL9IFn3Arxy1v9nJesDDesG/vVZ4wAq7zb9VvXXAl9vZvwn+csCE2uW/RBlwwAe28b94D23ARGz9vx7hacC2fQTAtY5mwNkwCsC9GGPAsM4PwMB/X8BZVhXATsRbwPjGGsD25lfAvR8gwFLoU8DQXyXABclPwF+GKsCqiUvAppIvwOwqR8DbgzTAd61CwDhZOcAAEj7A/hE+wDdZOcB4rULA2YM0wO0qR8Coki/AqIlLwGGGKsADyU/Azl8lwFToU8C7HyDA9+ZXwPfGGsBPxFvAW1YVwL5/X8Cyzg/AvBhjwNswCsC0jmbAtX0EwB/hacBBbP2/eQ9twAS28b9FGXDAgdrlvwr+csCb29m/VL11wA67zb+8VnjAyHrBv9jJesCrHLW/SRZ9wKGiqL+yO3/Alg6cv+CcgMB6Yo+/EYiBwFKggr9IX4LA65Nrv2Yig8DdwlG/StGDwHfRN7/ba4TAuMMdvwHyhMCmnQO/pmOFwI7G0r65wIXAlDGeviwJhsDiB1O+9TyGwCYY070KXIbAfRxXM2ZmhsAzGNM9ClyGwOkHUz71PIbAlzGePiwJhsCSxtI+ucCFwKedAz+mY4XAusMdPwHyhMB50Tc/22uEwN/CUT9K0YPA7JNrP2Yig8BToII/SF+CwHtijz8RiIHAlw6cP+CcgMCioqg/sjt/wKwctT9IFn3AyXrBP9jJesAPu80/vFZ4wI3b2T9XvXXAgtrlPwr+csAEtvE/RRlwwEJs/T95D23AtX0EQB/hacDbMApAtI5mwLLOD0C7GGPAVVYVQMN/X8D3xhpATsRbwLwfIED25lfAz18lQFPoU8BihipAA8lPwKmSL0CoiUvA3YM0QOoqR8A0WTlAe61CwP4RPkABEj7Ad61CQDhZOcDsKkdA2oM0wKqJS0Cmki/ABclPQF+GKsBV6FNAzF8lwPPmV0DAHyDAS8RbQPvGGsDAf19AWVYVwL0YY0Cvzg/Ato5mQNgwCsAg4WlAsn0EwHoPbUA8bP2/QhlwQA628b8I/nJAi9rlv1W9dUCW29m/vVZ4QAm7zb/ZyXpAwnrBv0oWfUCmHLW/szt/QJyiqL/fnIBAoQ6cvxCIgUCFYo+/SF+CQE2ggr9mIoNA35Nrv0vRg0DSwlG/3GuEQGzRN78B8oRArcMdv6ZjhUC7nQO/ucCFQLrG0r4tCYZAfTGevvU8hkC1B1O+ClyGQMoX070=';
+    var bin = typeof atob === 'function' ? atob(b64) : Buffer.from(b64, 'base64').toString('binary');
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Float32Array(bytes.buffer);
+  })();
+
+  // A seed's noise tables, as Noise::setSeed lays them out: rows (y) and
+  // columns (x) hash through T1 and T2 with seed1's byte s mixed in, and
+  // pick a gradient pair from G, the gradients shuffled by T3.
+  var seedCache = new Map();
+  function noiseTables(seed0, seed1) {
+    var sp = seedPair(seed0, seed1), key = sp[0] * 256 + sp[1], t = seedCache.get(key);
+    if (t) return t;
+    var T = tables(sp[0]), G = new Float32Array(512);
+    for (var j = 0; j < 256; j++) { G[2 * j] = GRAD[2 * T[3][j]]; G[2 * j + 1] = GRAD[2 * T[3][j] + 1]; }
+    t = { key: key, T1: T[1], T2: T[2], s: T[0][sp[1]], G: G };
+    if (seedCache.size > 256) seedCache.clear();
+    seedCache.set(key, t);
+    return t;
+  }
+
+  // The corner sums of Noise::noise for points already in lattice units:
+  //   out[i] += amp * sum over the four corners of (g . d) q^3
+  // in single precision, exactly as the game does it. It has two versions:
+  // for a chunk's grid of positions, q = max((1 - dy^2) - dx^2, 0) and the
+  // corners sum by column; for other points, q = 1 - min(dx^2 + dy^2, 1)
+  // and they sum by row.
+  function noiseKernel(grid, X, Y, n, t, amp, out) {
+    var f = Math.fround, T1 = t.T1, T2 = t.T2, s = t.s, G = t.G, scalarAmp = typeof amp === 'number';
     for (var i = 0; i < n; i++) {
-      var x = (xs[i] + ox) * scale + lx, y = ys[i] * scale;
-      var x0 = Math.floor(x), y0 = Math.floor(y);
-      var fx = x - x0, fy = y - y0, gx = fx - 1, gy = fy - 1;
-      var h0 = T2[x0 & 255], h1 = T2[(x0 + 1) & 255];
-      var v0 = T1[y0 & 255] ^ s, v1 = T1[(y0 + 1) & 255] ^ s;
-      // The four lattice corners, (0,0) (0,1) (1,0) (1,1), each inside
-      // radius 1 adding (g . d)(1 - |d|^2)^3.
-      var tot = 0, q, k;
-      q = 1 - fx * fx - fy * fy;
-      if (q > 0) { k = T3[h0 ^ v0]; tot += (GX[k] * fx + GY[k] * fy) * q * q * q; }
-      q = 1 - fx * fx - gy * gy;
-      if (q > 0) { k = T3[h0 ^ v1]; tot += (GX[k] * fx + GY[k] * gy) * q * q * q; }
-      q = 1 - gx * gx - fy * fy;
-      if (q > 0) { k = T3[h1 ^ v0]; tot += (GX[k] * gx + GY[k] * fy) * q * q * q; }
-      q = 1 - gx * gx - gy * gy;
-      if (q > 0) { k = T3[h1 ^ v1]; tot += (GX[k] * gx + GY[k] * gy) * q * q * q; }
-      out[i] += tot * (scalarAmp ? amp : amp[i]);
+      var xv = X[i], yv = Y[i], x0 = Math.floor(xv), y0 = Math.floor(yv);
+      var fx = f(xv - x0), fy = f(yv - y0), gx = f(fx - 1), gy = f(fy - 1);
+      var c0 = T2[x0 & 255], c1 = T2[(x0 + 1) & 255], r0 = T1[y0 & 255] ^ s, r1 = T1[(y0 + 1) & 255] ^ s;
+      var k00 = (c0 ^ r0) << 1, k01 = (c0 ^ r1) << 1, k10 = (c1 ^ r0) << 1, k11 = (c1 ^ r1) << 1;
+      var fxx = f(fx * fx), gxx = f(gx * gx), fyy = f(fy * fy), gyy = f(gy * gy), q00, q01, q10, q11;
+      if (grid) {
+        var a0 = f(1 - fyy), a1 = f(1 - gyy);
+        q00 = Math.max(f(a0 - fxx), 0); q10 = Math.max(f(a0 - gxx), 0);
+        q01 = Math.max(f(a1 - fxx), 0); q11 = Math.max(f(a1 - gxx), 0);
+      } else {
+        q00 = f(1 - Math.min(f(fxx + fyy), 1)); q01 = f(1 - Math.min(f(fxx + gyy), 1));
+        q10 = f(1 - Math.min(f(gxx + fyy), 1)); q11 = f(1 - Math.min(f(gxx + gyy), 1));
+      }
+      var c00 = f(f(f(fx * G[k00]) + f(fy * G[k00 + 1])) * f(f(q00 * q00) * q00));
+      var c01 = f(f(f(fx * G[k01]) + f(gy * G[k01 + 1])) * f(f(q01 * q01) * q01));
+      var c10 = f(f(f(gx * G[k10]) + f(fy * G[k10 + 1])) * f(f(q10 * q10) * q10));
+      var c11 = f(f(f(gx * G[k11]) + f(gy * G[k11 + 1])) * f(f(q11 * q11) * q11));
+      var sum = grid ? f(f(c11 + c10) + f(c01 + c00)) : f(f(c11 + c01) + f(c10 + c00));
+      out[i] = f(out[i] + f(sum * (scalarAmp ? amp : amp[i])));
     }
+  }
+
+  // The same kernel in WebAssembly with SIMD, four points at a time (from
+  // tools/mapgen/wasm/basis.c; build.sh there regenerates BASIS_WASM). Its
+  // results are the same to the bit. Browsers without WebAssembly SIMD, or
+  // pages whose CSP forbids compiling it, use the loop above.
+  var BASIS_WASM = 'AGFzbQEAAAABFwNgAAF/YAV/f399fwBgB39/fX19fH0AAw8OAAAAAAAAAAAAAAAAAQIEBQFwAQEBBQMBAAQGCAF/AUGAnAwLB1gPBm1lbW9yeQIAAnhzAAACeXMAAQJveAACAm95AAMBeAAEAXkABQNvdXQABgNhbXAABwFnAAgCdDEACQJ0MgAKA2NhcAALBmtlcm5lbAAMBmNvb3JkcwANCssTDggAQYCIgIAACwgAQYCIgYAACwgAQYCIgoAACwgAQYCIg4AACwgAQYCIhIAACwgAQYCIhYAACwgAQYCIhoAACwgAQYCIh4AACwgAQYCIiIAACwgAQYCYiIAACwgAQYCaiIAACwUAQYAgC6oNBAJ7AX8QewF/AkAgAEEBSA0AIAP9EyEFIAL9ESEGQQAhAkEAIQcDQCACQYCIhYAAav0ABAAiCP1oIgn9+AEiCv0M/wAAAP8AAAD/AAAA/wAAACIL/U4iDP0bAEGAmIiAAGotAAD9ESAM/RsBQYCYiIAAai0AAP0cASAM/RsCQYCYiIAAai0AAP0cAiAM/RsDQYCYiIAAai0AAP0cAyAG/VEiDSACQYCIhIAAav0ABAAiDv1oIg/9+AEiEP0MAQAAAAEAAAABAAAAAQAAACIR/a4BIAv9TiIM/RsAQYCaiIAAai0AAP0RIAz9GwFBgJqIgABqLQAA/RwBIAz9GwJBgJqIgABqLQAA/RwCIAz9GwNBgJqIgABqLQAA/RwDIhL9USEMIA0gECAL/U4iEP0bAEGAmoiAAGotAAD9ESAQ/RsBQYCaiIAAai0AAP0cASAQ/RsCQYCaiIAAai0AAP0cAiAQ/RsDQYCaiIAAai0AAP0cAyIT/VEhECAKIBH9rgEgC/1OIgv9GwBBgJiIgABqLQAA/REgC/0bAUGAmIiAAGotAAD9HAEgC/0bAkGAmIiAAGotAAD9HAIgC/0bA0GAmIiAAGotAAD9HAMgBv1RIgogEv1RIQsgCiAT/VEhCiAIIAn95QEiCCAI/eYBIRQgDiAP/eUBIgkgCf3mASETIAj9DAAAgL8AAIC/AACAvwAAgL8iDv3kASINIA395gEhESAJIA795AEiDiAO/eYBIRICQAJAIAFFDQD9DAAAgD8AAIA/AACAPwAAgD8iFSAR/eUBIhEgEv3lASIP/QwAAAAAAAAAAAAAAAAAAAAAIhYgD/0MAAAAAAAAAAAAAAAAAAAAACIX/UT9UiEPIBEgE/3lASIRIBYgESAX/UT9UiERIBUgFP3lASIUIBL95QEiEiAWIBIgF/1E/VIhEiAUIBP95QEiEyAWIBMgF/1E/VIhEwwBC/0MAACAPwAAgD8AAIA/AACAPyIWIBIgEf3kASIP/QwAAIA/AACAPwAAgD8AAIA/IhcgDyAW/UP9Uv3lASEPIBYgEiAU/eQBIhIgFyASIBb9Q/1S/eUBIRIgFiATIBH95AEiESAXIBEgFv1D/VL95QEhESAWIBMgFP3kASITIBcgEyAW/UP9Uv3lASETCyATIBP95gEgE/3mASAJIBD9GwBBA3RBgIiIgABq/V0DACAQ/RsBQQN0QYCIiIAAav1dAwD9DQABAgMEBQYHEBESExQVFhciEyAQ/RsCQQN0QYCIiIAAav1dAwAgEP0bA0EDdEGAiIiAAGr9XQMA/Q0AAQIDBAUGBxAREhMUFRYXIhD9DQABAgMICQoLEBESExgZGhv95gEgCCATIBD9DQQFBgcMDQ4PFBUWFxwdHh/95gH95AH95gEgESAR/eYBIBH95gEgCSAK/RsAQQN0QYCIiIAAav1dAwAgCv0bAUEDdEGAiIiAAGr9XQMA/Q0AAQIDBAUGBxAREhMUFRYXIhAgCv0bAkEDdEGAiIiAAGr9XQMAIAr9GwNBA3RBgIiIgABq/V0DAP0NAAECAwQFBgcQERITFBUWFyIK/Q0AAQIDCAkKCxAREhMYGRob/eYBIA0gECAK/Q0EBQYHDA0ODxQVFhccHR4f/eYB/eQB/eYBIhAgEiAS/eYBIBL95gEgDiAM/RsAQQN0QYCIiIAAav1dAwAgDP0bAUEDdEGAiIiAAGr9XQMA/Q0AAQIDBAUGBxAREhMUFRYXIgogDP0bAkEDdEGAiIiAAGr9XQMAIAz9GwNBA3RBgIiIgABq/V0DAP0NAAECAwQFBgcQERITFBUWFyIM/Q0AAQIDCAkKCxAREhMYGRob/eYBIAggCiAM/Q0EBQYHDA0ODxQVFhccHR4f/eYB/eQB/eYBIgwgARv95AEgDCAQIAEbIA8gD/3mASAP/eYBIA4gC/0bAEEDdEGAiIiAAGr9XQMAIAv9GwFBA3RBgIiIgABq/V0DAP0NAAECAwQFBgcQERITFBUWFyIMIAv9GwJBA3RBgIiIgABq/V0DACAL/RsDQQN0QYCIiIAAav1dAwD9DQABAgMEBQYHEBESExQVFhciEP0NAAECAwgJCgsQERITGBkaG/3mASANIAwgEP0NBAUGBwwNDg8UFRYXHB0eH/3mAf3kAf3mAf3kAf3kASEQIAUhDAJAIARFDQAgAkGAiIeAAGr9AAQAIQwLIAJBgIiGgABqIhggGP0ABAAgECAM/eYB/eQB/QsEACACQRBqIQIgB0EEaiIHIABIDQALCwuzBQIEewF/AkAgAEEBSA0AIAT9EyEHIAP9EyEIIAX9FCEJIAL9EyEKAkACQAJAAkAgAQ4DAAECAwsgAUECdCELA0AgC0GAiISAAGogC0GAiICAAGr9AAQAIAj95AEgCv3mAf0LBAAgC0GAiIWAAGogC0GAiIGAAGr9AAQAIAf95AEgCv3mAf0LBAAgC0EQaiELIAFBBGoiASAASA0ADAQLC0EAIQtBACEBA0AgC0GAiISAAGogC0GAiICAAGr9AAQAIAtBgIiCgABq/QAEACIJ/eUBIAkgCP3kAf3kASAK/eYB/QsEACALQYCIhYAAaiALQYCIgYAAav0ABAAgC0GAiIOAAGr9AAQAIgn95QEgCSAH/eQB/eQBIAr95gH9CwQAIAtBEGohCyABQQRqIgEgAEgNAAwDCwtBACELQQAhAQNAIAtBgIiFgABqIAtBgIiBgABq/QAEACAK/eYB/QsEACALQYCIhIAAaiAJIAtBgIiAgABq/QAEACAK/eYBIgf9X/3wAf1eIAkgByAH/Q0ICQoLDA0ODwgJCgsMDQ4P/V/98AH9Xv0NAAECAwQFBgcQERITFBUWF/0LBAAgC0EQaiELIAFBBGoiASAASA0ADAILCyAG/RMhB0EAIQtBACEBA0AgC0GAiIWAAGogByALQYCIg4AAav0ABAAiCP3mASAHIAtBgIiBgABq/QAEACAI/eUB/eYB/eQBIAr95gH9CwQAIAtBgIiEgABqIAcgC0GAiICAAGr9AAQAIAtBgIiCgABq/QAEACII/eUB/eYBIAkgByAI/eYBIgj9X/3wAf1eIAkgCCAI/Q0ICQoLDA0ODwgJCgsMDQ4P/V/98AH9Xv0NAAECAwQFBgcQERITFBUWF/3kASAK/eYB/QsEACALQRBqIQsgAUEEaiIBIABIDQALCws=';
+  var useWasm = true;
+  var wasmKernel = (function () {
+    try {
+      if (!BASIS_WASM || typeof WebAssembly !== 'object' || typeof atob !== 'function') return null;
+      var bin = atob(BASIS_WASM), bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      var ex = new WebAssembly.Instance(new WebAssembly.Module(bytes), {}).exports, buf = ex.memory.buffer, cap = ex.cap();
+      return {
+        ex: ex, cap: cap, key: -1,
+        xs: new Float32Array(buf, ex.xs(), cap), ys: new Float32Array(buf, ex.ys(), cap),
+        ox: new Float32Array(buf, ex.ox(), cap), oy: new Float32Array(buf, ex.oy(), cap),
+        x: new Float32Array(buf, ex.x(), cap), y: new Float32Array(buf, ex.y(), cap),
+        out: new Float32Array(buf, ex.out(), cap), amp: new Float32Array(buf, ex.amp(), cap),
+        g: new Float32Array(buf, ex.g(), 512), t1: new Uint8Array(buf, ex.t1(), 256), t2: new Uint8Array(buf, ex.t2(), 256),
+      };
+    } catch (e) {
+      return null;
+    }
+  })();
+
+  // Octaves of noise summed into out over the points xs/ys (and, on a
+  // chunk's grid, grid.x0/y0 their chunk's corner): add() one octave at a
+  // time, then end(). Each octave's points go into lattice units one of four
+  // ways, as the game's callers do it:
+  //   'point'   (x + offx) * s
+  //   'grid'    ((x - x0) + (offx + x0)) * s
+  //   'mpoint'  x * s + c, the add in double (multioctave, c = 17.17 k)
+  //   'mgrid'   ((x - x0) * st + (x0 * st + c)) * s, the inner add in double
+  //             (multioctave on a grid, c = 17.17 k / s)
+  // and y the same without c. In WebAssembly the points and the sum stay in
+  // its memory throughout.
+  var KINDS = { point: 0, grid: 1, mpoint: 2, mgrid: 3 };
+  function noiseSum(out, xs, ys, n, grid) {
+    var W = wasmKernel, gx = grid && grid.x0, gy = grid && grid.y0, i;
+    if (!W || !useWasm || n > W.cap) {
+      var X = new Float32Array(n), Y = new Float32Array(n);
+      return {
+        add: function (kind, t, amp, s, offx, offy, c, st) {
+          for (i = 0; i < n; i++) {
+            var x = xs[i], y = ys[i];
+            if (kind === 'point') { X[i] = fr(fr(x + offx) * s); Y[i] = fr(fr(y + offy) * s); continue; }
+            if (kind === 'mpoint') { X[i] = fr(fr(x * s) + c); Y[i] = fr(y * s); continue; }
+            var ox = typeof gx === 'number' ? gx : gx[i], oy = typeof gy === 'number' ? gy : gy[i];
+            if (kind === 'grid') { X[i] = fr(fr(fr(x - ox) + fr(offx + ox)) * s); Y[i] = fr(fr(fr(y - oy) + fr(offy + oy)) * s); }
+            else { X[i] = fr(fr(fr(fr(x - ox) * st) + fr(fr(ox * st) + c)) * s); Y[i] = fr(fr(fr(fr(y - oy) * st) + fr(oy * st)) * s); }
+          }
+          noiseKernel(kind === 'grid' || kind === 'mgrid', X, Y, n, t, amp, out);
+        },
+        end: function () {},
+      };
+    }
+    var m = (n + 3) & ~3;
+    W.xs.set(xs.subarray(0, n)); W.ys.set(ys.subarray(0, n)); W.out.set(out.subarray(0, n));
+    if (grid) {
+      if (typeof gx === 'number') W.ox.fill(gx, 0, m); else W.ox.set(gx.subarray(0, n));
+      if (typeof gy === 'number') W.oy.fill(gy, 0, m); else W.oy.set(gy.subarray(0, n));
+    }
+    return {
+      add: function (kind, t, amp, s, offx, offy, c, st) {
+        if (W.key !== t.key) { W.g.set(t.G); W.t1.set(t.T1); W.t2.set(t.T2); W.key = t.key; }
+        var k = KINDS[kind];
+        W.ex.coords(m, k, s, offx || 0, offy || 0, c || 0, st || 0);
+        if (typeof amp === 'number') W.ex.kernel(m, k & 1, t.s, amp, 0);
+        else { W.amp.set(amp.subarray(0, n)); W.ex.kernel(m, k & 1, t.s, 0, 1); }
+      },
+      end: function () { out.set(W.out.subarray(0, n)); },
+    };
+  }
+
+  // Noise::noise for one octave, as BasisNoise and the octave noises call
+  // it: on a chunk's grid when x and y are the plain positions and the
+  // lattice fits the cache's scratch, otherwise point by point.
+  var SCRATCH = 1025, CHUNK_W = 32;
+  function gridFits(s, octaves) {
+    var c = Math.ceil(fr(fr(CHUNK_W) * s));
+    return octaves ? SCRATCH > 2 * c : SCRATCH >= c + 1;
+  }
+  function onGrid(nd, ctx) { return !!(ctx && ctx.grid && nd.args[0] === ctx.b.X && nd.args[1] === ctx.b.Y); }
+  function noiseOctave(sum, grid, t, s, amp, offx, offy) {
+    sum.add(grid && s > 0 && gridFits(s) ? 'grid' : 'point', t, amp, s, offx, offy);
   }
 
   // ---------------------------------------------------------------- program
@@ -702,7 +815,8 @@
     return spots;
   }
 
-  function evalSpot(nd, a, n, alloc, b) {
+  function evalSpot(nd, a, n, alloc, ctx) {
+    var b = ctx.b;
     var e = nd.extra, out = alloc();
     var xs = arr(a[0], n), ys = arr(a[1], n);
     out.fill(e.basement);
@@ -864,7 +978,8 @@
     }
     return { x0: x0, y0: y0, w: w, h: h, px: px, py: py, id: id };
   }
-  function evalVoronoi(nd, a, n, alloc, b, memo) {
+  function evalVoronoi(nd, a, n, alloc, ctx) {
+    var memo = ctx && ctx.memo;
     var e = nd.extra, out = alloc();
     var xs = arr(a[0], n), ys = arr(a[1], n);
     var dist = VORONOI_DIST[e.type], g = e.grid;
@@ -1034,7 +1149,9 @@
     this.last = last;
   }
 
-  Program.prototype.run = function (xs, ys) {
+  // grid: for a chunk's positions, {x0, y0} its corner (numbers, or arrays
+  // per point), so noise takes the game's grid path where it would.
+  Program.prototype.run = function (xs, ys, grid) {
     var n = xs.length, nodes = this.nodes, order = this.order, last = this.last;
     // Buffers come back to the pool when their last reader is done. The
     // previous run's outputs go back too: they are only good until the
@@ -1045,7 +1162,7 @@
     var alloc = function () { return pool.length ? pool.pop() : new Float32Array(n); };
     var vals = this.vals || (this.vals = new Array(nodes.length));
     // Work that several nodes of this run can share (see evalVoronoi).
-    var memo = new Map();
+    var ctx = { b: this.b, memo: new Map(), grid: grid || null };
     var argv = this.argv || (this.argv = order.map(function (id) { return new Array(nodes[id].args.length); }));
     for (var at = 0; at < order.length; at++) {
       var id = order[at], nd = nodes[id], args = nd.args, v;
@@ -1055,7 +1172,7 @@
       else {
         var av = argv[at];
         for (var j = 0; j < args.length; j++) av[j] = vals[args[j]];
-        v = EVAL[nd.op](nd, av, n, alloc, this.b, memo);
+        v = EVAL[nd.op](nd, av, n, alloc, ctx);
       }
       vals[id] = v;
       for (j = 0; j < args.length; j++) {
@@ -1267,69 +1384,97 @@
   };
   var arr = function (v, n) { if (typeof v !== 'number') return v; var f = new Float32Array(n); f.fill(v); return f; };
 
-  EVAL.basis = function (nd, a, n, alloc) {
+  EVAL.basis = function (nd, a, n, alloc, ctx) {
     var e = nd.extra, out = alloc();
     out.fill(0);
-    basisAdd(out, arr(a[0], n), arr(a[1], n), n, e[0], e[1], 0, e[2], 0, e[3]);
+    var sum = noiseSum(out, arr(a[0], n), arr(a[1], n), n, onGrid(nd, ctx) && ctx.grid);
+    noiseOctave(sum, onGrid(nd, ctx), noiseTables(e[0], e[1]), fr(e[2]), fr(e[3]), 0, 0);
+    sum.end();
     return out;
   };
-  // Octave k (finest first) is basis(x * s / 2^k + 17.17 k, y * s / 2^k),
-  // weighted persistence^(octaves - 1 - k), the sum divided by the root of
-  // the summed squared weights.
-  EVAL.multioctave = function (nd, a, n, alloc) {
+  // NoiseOperations::MultioctaveNoise. Octave k (finest first) has input
+  // scale s / 2^k and weight w_k, the finest octave's weight in closed form,
+  // sqrt((q - 1) / (q^n - 1)) times output_scale with q = 1/p^2 and the power
+  // from the fast approximation, then times 1/p for each coarser one. Point
+  // by point, octave k is noise at (x s_k + 17.17 k, y s_k); on a chunk's
+  // grid the octave's grid is scaled instead, its origin moved by
+  // 17.17 k / s.
+  EVAL.multioctave = function (nd, a, n, alloc, ctx) {
     var e = nd.extra, oct = e[2], out = alloc();
     var xs = arr(a[0], n), ys = arr(a[1], n), p = a[2];
     out.fill(0);
-    if (typeof p === 'number') {
-      // As NoiseOperations::MultioctaveNoise: the finest octave's weight in
-      // closed form, sqrt((q - 1) / (q^n - 1)) with q = 1/p^2 and the power
-      // from the fast approximation, then times 1/p for each coarser one.
-      var amp;
-      if (p === 1) amp = fr(e[4] / Math.sqrt(oct));
-      else {
-        var ip = fr(1 / p), q = fr(ip * ip);
-        var r = gameFastPow(q, oct);
-        amp = fr(Math.sqrt(fr(fr(q - 1) / fr(r - 1))) * e[4]);
+    var t = noiseTables(e[0], e[1]), is = fr(e[3]), i, k, sk;
+    var grid = onGrid(nd, ctx) && is > 0 && gridFits(is, true), sum = noiseSum(out, xs, ys, n, grid && ctx.grid);
+    if (typeof p !== 'number') {
+      // Persistence per point (the game only takes a constant): weights
+      // p^(octaves - 1 - k), normalised by their root sum of squares.
+      var w = new Float32Array(n), nn = new Float64Array(n);
+      for (k = 0, sk = is; k < oct; k++) {
+        for (i = 0; i < n; i++) { w[i] = Math.pow(p[i], oct - 1 - k); nn[i] += w[i] * w[i]; }
+        sum.add('mpoint', t, w, sk, 0, 0, k * 17.17);
+        sk = fr(sk * 0.5);
       }
-      for (var k = 0; k < oct; k++) {
-        basisAdd(out, xs, ys, n, e[0], e[1], 0, e[3] / Math.pow(2, k), 17.17 * k, amp);
-        amp = p === 1 ? amp : fr(amp * fr(1 / p));
+      sum.end();
+      for (i = 0; i < n; i++) out[i] = out[i] / Math.sqrt(nn[i]) * e[4];
+      return out;
+    }
+    var amp, ip = fr(1 / p);
+    if (ip === 1) amp = fr(e[4] / Math.sqrt(oct));
+    else if (ip === 0) amp = fr(e[4]);
+    else {
+      var q = fr(ip * ip), r = gameFastPow(q, oct);
+      amp = fr(Math.sqrt(fr(fr(q - 1) / fr(r - 1))) * e[4]);
+    }
+    if (grid) {
+      for (k = 0, sk = 1; k < oct; k++) {
+        sum.add('mgrid', t, amp, is, 0, 0, k * 17.17 / is, sk);
+        sk = fr(sk * 0.5); amp = fr(amp * ip);
       }
     } else {
-      var w = new Float32Array(n), nn = new Float64Array(n);
-      for (k = 0; k < oct; k++) {
-        for (var i = 0; i < n; i++) { w[i] = Math.pow(p[i], oct - 1 - k); nn[i] += w[i] * w[i]; }
-        basisAdd(out, xs, ys, n, e[0], e[1], 0, e[3] / Math.pow(2, k), 17.17 * k, w);
+      for (k = 0, sk = is; k < oct; k++) {
+        sum.add('mpoint', t, amp, sk, 0, 0, k * 17.17);
+        sk = fr(sk * 0.5); amp = fr(amp * ip);
       }
-      for (i = 0; i < n; i++) out[i] = out[i] / Math.sqrt(nn[i]) * e[4];
     }
+    sum.end();
     return out;
   };
-  // Octave k: basis((x + offset_x) * s * m_in^k, y * s * m_in^k) * out * m_out^k,
-  // seed0 shifted by k * octave_seed0_shift.
-  EVAL.quick = function (nd, a, n, alloc) {
+  // quick_multioctave_noise compiles to basis noises: octave k has seed0
+  // shifted by k * octave_seed0_shift, and input and output scales
+  // multiplied along in single precision.
+  EVAL.quick = function (nd, a, n, alloc, ctx) {
     var e = nd.extra, out = alloc();
     var xs = arr(a[0], n), ys = arr(a[1], n);
     out.fill(0);
-    var s = e[3], amp = e[4];
+    var s = fr(e[3]), amp = fr(e[4]), min = fr(e[7]), mout = fr(e[6]), grid = onGrid(nd, ctx);
+    var sum = noiseSum(out, xs, ys, n, grid && ctx.grid);
     for (var k = 0; k < e[2]; k++) {
-      basisAdd(out, xs, ys, n, (e[0] + k * e[8]) >>> 0, e[1], e[5], s, 0, amp);
-      s *= e[7]; amp *= e[6];
+      noiseOctave(sum, grid, noiseTables((e[0] + k * e[8]) >>> 0, e[1]), s, amp, fr(e[5]), 0);
+      s = fr(s * min); amp = fr(amp * mout);
     }
+    sum.end();
     return out;
   };
-  // Octave j (coarsest first): basis((x + offset_x) * s * 2^(j - octaves)) * 2^octaves * p^j.
-  EVAL.varpersist = function (nd, a, n, alloc) {
+  // NoiseOperations::VariablePersistenceMultioctaveNoise: octaves from the
+  // finest (input_scale / 2) down, each weight 1, the running sum times the
+  // persistence before each next one (Horner), then times output_scale * 2^n.
+  EVAL.varpersist = function (nd, a, n, alloc, ctx) {
     var e = nd.extra, oct = e[2], out = alloc();
-    var xs = arr(a[0], n), ys = arr(a[1], n), p = a[2];
+    var xs = arr(a[0], n), ys = arr(a[1], n), p = a[2], t = noiseTables(e[0], e[1]);
     out.fill(0);
-    var w = new Float32Array(n);
-    for (var j = 0; j < oct; j++) {
-      var amp;
-      if (typeof p === 'number') amp = Math.pow(2, oct) * Math.pow(p, j) * e[4];
-      else { for (var i = 0; i < n; i++) w[i] = Math.pow(2, oct) * Math.pow(p[i], j) * e[4]; amp = w; }
-      basisAdd(out, xs, ys, n, e[0], e[1], e[5], e[3] * Math.pow(2, j - oct), 0, amp);
+    var s = fr(fr(e[3]) * 0.5), offx = fr(e[5]), i, grid = onGrid(nd, ctx);
+    for (var k = 0; k < oct; k++) {
+      var sum = noiseSum(out, xs, ys, n, grid && ctx.grid);
+      noiseOctave(sum, grid, t, s, 1, offx, 0);
+      sum.end();
+      s = fr(s * 0.5);
+      if (k < oct - 1) {
+        if (typeof p === 'number') for (i = 0; i < n; i++) out[i] = fr(p * out[i]);
+        else for (i = 0; i < n; i++) out[i] = fr(p[i] * out[i]);
+      }
     }
+    var os = fr(fr(e[4]) * Math.pow(2, oct));
+    for (i = 0; i < n; i++) out[i] = fr(os * out[i]);
     return out;
   };
   function nearest(nd, a, n, alloc, which) {
@@ -1384,7 +1529,10 @@
   }
 
   return {
-    Taus88: Taus88, crc32str: crc32str, tables: tables, basisAdd: basisAdd,
+    Taus88: Taus88, crc32str: crc32str, tables: tables, noiseTables: noiseTables, noiseKernel: noiseKernel, GRAD: GRAD,
+    // Whether the noise kernel runs in WebAssembly (when it loads); false
+    // forces the JS loop.
+    wasm: function (on) { if (on !== undefined) useWasm = on; return !!wasmKernel && useWasm; },
     parse: parse, compile: compile, Builder: Builder, Scope: Scope, Program: Program,
     EVAL: EVAL, FOLD: FOLD, BUILTIN_EXT: BUILTIN_EXT,
   };

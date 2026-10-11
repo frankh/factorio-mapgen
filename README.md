@@ -109,7 +109,7 @@ share of pixels that match exactly:
 
 | Nauvis | Vulcanus | Gleba | Fulgora | Aquilo |
 | --- | --- | --- | --- | --- |
-| 99.9% | 99.4% | 99.7% | 99.8% | 99.97% |
+| 99.92% | 99.45% | 99.72% | 99.76% | 99.99% |
 
 Terrain is exact; what differs is mostly a few cliffs and entities where the
 noise is off in its last bits.
@@ -118,14 +118,19 @@ noise is off in its last bits.
 
 Rendering a 512x512 view on one core takes 1 to 6 seconds depending on the
 planet (Aquilo quickest, Fulgora slowest); the page spreads chunks over up
-to six workers. Where the time goes: basis noise, then Voronoi cells. The
-evaluator runs each node over a whole chunk at once, with a typed loop per
-operator, buffers reused between nodes and runs, and nodes that ask for the
-same nearest-cell search sharing it. Pass 1 reuses pass 0's tiles and only
-works out the ring of tiles around the chunk that collision checks reach
-into. The site's CSP rules out generated code (`new Function`), and
-WebAssembly would need `'wasm-unsafe-eval'` added to it for what is left
-(mostly the basis noise loop), so it is plain JavaScript.
+to six workers. The evaluator runs each node over a whole chunk at once,
+with a typed loop per operator, buffers reused between nodes and runs, and
+nodes that ask for the same nearest-cell search sharing it. Pass 1 reuses
+pass 0's tiles and only works out the ring of tiles around the chunk that
+collision checks reach into.
+
+Basis noise, which every octave noise is made of, runs in WebAssembly with
+SIMD, four points at a time (`wasm/basis.c`, embedded in `noise.js` by
+`wasm/build.sh`). It does the game's single-precision arithmetic in the
+game's order, so it gives the same bits as the JS loop beside it, which
+browsers without WebAssembly SIMD (or pages without `'wasm-unsafe-eval'` in
+their CSP) use instead, at about half the speed. The site's CSP still rules
+out `new Function`.
 
 ### How the game does it
 
@@ -133,19 +138,31 @@ Worked out from the 2.0.77 headless binary (it keeps its symbols) and checked
 against values the game computes (`LuaSurface.calculate_tile_properties`) and
 maps it generates. `test/noise.test.js` holds a sample of those values.
 
-- **basis_noise**: gradient noise on a unit lattice, kernel `(g·d)(1-|d|²)³`
-  within radius 1, gradients of length 4.2 at one of 256 angles. The angle
-  comes from four permutation tables, shuffled with taus88 (as
-  `LuaRandomGenerator`, seeds below 341 count as 341) seeded with
-  `seed0 + 7 * (seed1 >> 8)`; `seed1 & 255` picks the row. A string seed1
-  is its CRC-32.
-- **multioctave_noise**: octave k (finest first) samples
-  `basis(x s / 2^k + 17.17 k, y s / 2^k)` weighted `p^(n-1-k)`, divided by the
-  root of the summed squared weights.
-- **quick_multioctave_noise**: octave k samples `(x + offset_x) s m_in^k`
-  with seed0 `+ k * octave_seed0_shift`, weighted `m_out^k`.
-- **variable_persistence_multioctave_noise**: octave j (coarsest first)
-  samples `(x + offset_x) s 2^(j-n)`, weighted `2^n p^j`.
+- **basis_noise** (`Noise::noise`): gradient noise on a unit lattice, each
+  corner adding `(g·d) q³` in single precision. The 256 gradients are the
+  game's own float table (4.2 at 256 angles, read from a running game, as
+  its rounding fits no formula), shuffled per seed; rows and columns hash
+  through two more tables, all shuffled with taus88 (as `LuaRandomGenerator`,
+  seeds below 341 count as 341) seeded with `seed0 + 7 * (seed1 >> 8)`;
+  `seed1 & 255` is mixed into the row hash. A string seed1 is its CRC-32.
+  There are two versions, and which one runs changes the last bits: for a
+  chunk's grid of positions (when x and y are the plain position, as in map
+  generation) `q = max((1 - dy²) - dx², 0)`, positions `(i + (offset +
+  corner)) · scale`, corners summed by column; for any other points `q = 1 -
+  min(dx² + dy², 1)`, positions `(x + offset) · scale`, corners summed by
+  row.
+- **multioctave_noise**: octave k (finest first) at scale `s / 2^k`, point by
+  point at `(x s_k + 17.17 k, y s_k)` (that add in double precision), on a
+  grid with the grid shrunk instead and its corner moved by `17.17 k / s`.
+  The finest octave's weight is `sqrt((q - 1) / (q^n - 1))` times
+  output_scale with `q = 1/p²` (the power by the fast approximation), each
+  coarser one times `1/p`.
+- **quick_multioctave_noise**: basis noises; octave k at
+  `(x + offset_x) s_k`, seed0 `+ k * octave_seed0_shift`, scale and weight
+  multiplied along in single precision.
+- **variable_persistence_multioctave_noise**: from the finest octave
+  (scale `s / 2`) down, each weight 1, the running sum times the persistence
+  before the next (Horner), then times `output_scale · 2^n`.
 - **spot_noise**: regions of `region_size` centred on its multiples, each
   with candidate points from taus88 seeded
   `(7919 rx + 7907 ry + 7927 seed1 + 0x3fbe2c) ^ seed0`; cones of volume
