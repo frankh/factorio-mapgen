@@ -1,0 +1,261 @@
+/* Factorio's "Map generator" window, in the game's own logical pixels
+   (UI scale 100%). Sizes follow core/prototypes/style.lua; colours were
+   sampled from in-game screenshots. Everything is scoped under .fmg. */
+
+@font-face { font-family: 'Titillium Web'; font-weight: 400; src: url(fonts/TitilliumWeb-400.woff2) format('woff2'); }
+@font-face { font-family: 'Titillium Web'; font-weight: 600; src: url(fonts/TitilliumWeb-600.woff2) format('woff2'); }
+@font-face { font-family: 'Titillium Web'; font-weight: 700; src: url(fonts/TitilliumWeb-700.woff2) format('woff2'); }
+
+.fmg {
+  --frame: #313031;          /* window body */
+  --frame-edge: #242324;
+  --inset: #242324;          /* deep, sunken areas */
+  --shallow: #3e3d3e;        /* shallow inside frames */
+  --cell: #3e3d3e;           /* table cells */
+  --cell-line: #2b2a2b;
+  --heading: #ffe6c0;
+  --text: #ffffff;
+  --muted: #a0a0a0;
+  --orange: #fca100;
+  --orange-hi: #ffc04d;
+  --grey: #8e8e8e;
+  --grey-hi: #b2b2b2;
+  --green: #5eb663;
+  --green-hi: #84d488;
+  --red: #fe5a5a;
+  --info: #7cb8e8;
+  font-family: 'Titillium Web', sans-serif;
+  font-size: 14px;
+  line-height: 18px;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  box-sizing: border-box;
+}
+.fmg *, .fmg *::before, .fmg *::after { box-sizing: border-box; }
+.fmg [hidden] { display: none !important; }
+
+/* ---- window frame ---- */
+.fmg-window {
+  position: relative;
+  width: 677px;
+  background: var(--frame);
+  padding: 4px 8px 8px;
+  border-radius: 2px;
+  box-shadow:
+    inset 0 1px 0 #4b4a4b, inset 1px 0 0 #3b3a3b, inset -1px 0 0 #222, inset 0 -1px 0 #1b1a1b,
+    0 0 0 1px #141414, 0 6px 18px rgba(0, 0, 0, .55);
+}
+.fmg-titlebar { display: flex; align-items: center; gap: 8px; height: 33px; margin-bottom: 4px; }
+.fmg-title { font-weight: 700; font-size: 18px; line-height: 24px; color: var(--heading); padding-left: 4px; white-space: nowrap; }
+.fmg-drag {
+  flex: 1; height: 24px; margin-left: 4px;
+  background: repeating-linear-gradient(90deg, #2a2a2a 0 3px, #383738 3px 6px);
+  box-shadow: inset 0 1px 0 #1d1d1d, inset 0 -1px 0 #444;
+}
+
+/* A deep, sunken frame holding the settings (inside_deep_frame). */
+.fmg-deep { background: var(--inset); box-shadow: inset 0 0 0 1px #171617, inset 0 2px 2px rgba(0,0,0,.5); padding: 0; }
+
+/* Top row: preset, reset, seed. */
+.fmg-subheader { display: flex; align-items: center; gap: 4px; height: 36px; padding: 0 4px; background: #1f1e1f; }
+.fmg-subheader .fmg-spacer { flex: 1; }
+.fmg-label-bold { font-weight: 700; color: var(--heading); }
+.fmg-seed-label { margin-right: 8px; }
+
+.fmg-desc {
+  background: var(--shallow); height: 60px; padding: 6px 12px; color: #fff; overflow: hidden;
+  box-shadow: inset 0 1px 0 #555, inset 0 -1px 0 #1a1a1a;
+}
+
+/* ---- tabs ---- */
+.fmg-tabbar { display: flex; gap: 2px; padding: 0 12px; background: #1f1e1f; height: 52px; align-items: flex-end; }
+.fmg-tab {
+  min-width: 84px; height: 32px; padding: 6px 12px 8px; font: 700 14px/18px 'Titillium Web', sans-serif;
+  color: #1c1c1c; background: linear-gradient(#a3a3a3, #8e8e8e 30%, #8a8a8a); border: 0; border-radius: 3px 3px 0 0;
+  box-shadow: inset 0 1px 0 #cfcfcf, inset 1px 0 0 #9d9d9d, inset -1px 0 0 #6b6b6b, 0 0 0 1px #191919;
+  cursor: pointer;
+}
+.fmg-tab:hover { background: linear-gradient(#ffc966, #f9b44b); box-shadow: inset 0 1px 0 #ffe0a8, 0 0 0 1px #191919, 0 0 6px rgba(249,180,75,.6); }
+.fmg-tab[aria-selected=true] {
+  color: var(--heading); background: var(--shallow); height: 35px;
+  box-shadow: inset 0 1px 0 #5a595a, inset 1px 0 0 #4a494a, inset -1px 0 0 #2a2a2a, 0 0 0 1px #191919;
+}
+.fmg-tabpanel { background: var(--shallow); padding: 11px 8px 8px; height: min(884px, max(380px, calc(100vh - 330px))); overflow-y: auto; overflow-x: hidden; }
+.fmg-tabpanel::-webkit-scrollbar { width: 12px; }
+.fmg-tabpanel::-webkit-scrollbar-track { background: #242324; }
+.fmg-tabpanel::-webkit-scrollbar-thumb { background: #8e8e8e; border: 2px solid #242324; border-radius: 2px; }
+
+/* ---- bordered tables (map_generator_frequency_table) ---- */
+.fmg-table { width: 100%; border-collapse: separate; border-spacing: 0; margin-bottom: 4px; }
+.fmg-table td, .fmg-table th {
+  background: var(--cell); padding: 8px; height: 52px; font-weight: 400; text-align: center;
+  box-shadow: inset 1px 1px 0 #4a494a, inset -1px -1px 0 #262526;
+  border-right: 2px solid var(--cell-line); border-bottom: 2px solid var(--cell-line);
+}
+.fmg-table th { height: 40px; color: #fff; white-space: nowrap; padding: 0 4px; }
+.fmg-table td:first-child, .fmg-table th:first-child { text-align: left; }
+.fmg-table tr > :last-child { border-right: 0; }
+.fmg-table tr:last-child > * { border-bottom: 0; }
+.fmg-table .fmg-name { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.fmg-table .fmg-name .fmg-check { margin-right: 4px; }
+.fmg-table col.fmg-c-name { width: 176px; }
+.fmg-table col.fmg-c-planet { width: 96px; }
+.fmg-table col.fmg-c-a { width: 120px; }
+.fmg-table col.fmg-c-b { width: 128px; }
+.fmg-table col.fmg-c-c { width: 118px; }
+.fmg-table { table-layout: fixed; }
+.fmg-table.fmg-wide-first col.fmg-c-name { width: 298px; }
+.fmg-table.fmg-wide-first col.fmg-c-planet { width: 99px; }
+.fmg-table.fmg-wide-first col.fmg-c-a { width: 123px; }
+.fmg-table.fmg-wide-first col.fmg-c-b { width: 122px; }
+
+/* info "i" marker after a label with a tooltip */
+.fmg-i {
+  display: inline-block; width: 8px; height: 8px; margin-left: 4px; vertical-align: 1px; border-radius: 50%;
+  background: radial-gradient(circle at 50% 30%, #a9d6ff, #4d9ae6); position: relative;
+}
+.fmg-i::after { content: ''; position: absolute; left: 3.5px; top: 3px; width: 1px; height: 4px; background: #1c2f44; }
+
+/* ---- checkboxes ---- */
+.fmg-check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.fmg-check input { appearance: none; -webkit-appearance: none; margin: 0; width: 16px; height: 16px; flex: none;
+  background: #8e8e8e; border-radius: 2px; box-shadow: inset 0 1px 0 #b8b8b8, inset 0 -1px 0 #555, 0 0 0 1px #1d1d1d; cursor: pointer; position: relative; }
+.fmg-check input:checked { background: linear-gradient(#f5b345, #e39827); box-shadow: inset 0 1px 0 #ffd590, inset 0 -1px 0 #9a5e0b, 0 0 0 1px #1d1d1d; }
+.fmg-check input:checked::after { content: ''; position: absolute; left: 5px; top: 1px; width: 5px; height: 10px; border: solid #1c1c1c; border-width: 0 2.5px 2.5px 0; transform: rotate(40deg); }
+.fmg-check input:hover { box-shadow: 0 0 0 1px #1d1d1d, 0 0 4px 1px rgba(249,180,75,.8); }
+.fmg-check input:disabled { opacity: .5; }
+
+/* ---- notched sliders ---- */
+.fmg-slider { position: relative; width: 108px; height: 20px; margin: -4px auto 4px; cursor: pointer; touch-action: none; }
+.fmg-slider .fmg-notches { position: absolute; left: 0; right: 0; top: 0; height: 9px; }
+.fmg-slider .fmg-notch { position: absolute; top: 0; width: 2px; height: 8px; margin-left: -1px; background: #141414; box-shadow: 0 1px 0 #6e6e6e; }
+.fmg-slider .fmg-notch::after { content: ''; position: absolute; left: 0; bottom: -2px; width: 2px; height: 2px; background: #bdbdbd; }
+.fmg-slider .fmg-track { position: absolute; left: 0; right: 0; top: 12px; height: 6px; background: #141414; box-shadow: 0 1px 0 #6e6e6e; border-radius: 1px; }
+.fmg-slider .fmg-fill { position: absolute; left: 0; top: 11px; height: 8px; background: linear-gradient(#ffb21c, #fca100 40%, #e08a00); border-radius: 1px; box-shadow: 0 1px 0 #6b5a3b; }
+.fmg-slider .fmg-thumb {
+  position: absolute; top: 4px; width: 12px; height: 17px; margin-left: -6px;
+  background: linear-gradient(90deg, #8b8b8b, #b9b9b9 30%, #9a9a9a 60%, #7a7a7a);
+  clip-path: polygon(50% 0, 100% 30%, 100% 100%, 0 100%, 0 30%);
+}
+.fmg-slider .fmg-thumb::after { content: ''; position: absolute; left: 3px; right: 3px; top: 7px; bottom: 3px;
+  background: repeating-linear-gradient(90deg, #6d6d6d 0 1px, transparent 1px 3px); }
+.fmg-slider:hover .fmg-thumb, .fmg-slider.fmg-drag-on .fmg-thumb { background: linear-gradient(90deg, #d68a00, #ffc04d 30%, #f3a51b 60%, #c47c00); }
+.fmg-slider.fmg-disabled { cursor: default; opacity: .45; pointer-events: none; }
+.fmg-slider.fmg-plain .fmg-notches { display: none; }
+.fmg-slider.fmg-plain { margin: 0; }
+
+/* ---- form controls ---- */
+.fmg-dropdown { position: relative; min-width: 116px; height: 28px; }
+.fmg-dropdown select {
+  appearance: none; -webkit-appearance: none; width: 100%; height: 28px; padding: 0 28px 0 8px; border: 0; border-radius: 2px;
+  font: 600 14px/28px 'Titillium Web', sans-serif; color: #1c1c1c; cursor: pointer;
+  background: linear-gradient(#a6a6a6, #8e8e8e 35%, #8a8a8a);
+  box-shadow: inset 0 1px 0 #cdcdcd, inset 0 -1px 0 #5d5d5d, 0 0 0 1px #1a1a1a;
+}
+.fmg-dropdown select:hover { background: linear-gradient(#ffcd70, #f9b44b); }
+.fmg-dropdown::after { content: ''; position: absolute; right: 12px; top: 12px; border: 5px solid transparent; border-top: 6px solid #1c1c1c; border-bottom: 0; pointer-events: none; }
+
+.fmg-text {
+  height: 28px; width: 116px; padding: 0 6px; border: 0; border-radius: 2px; font: 400 14px/28px 'Titillium Web', sans-serif; color: #1c1c1c;
+  background: #8e8e8e; box-shadow: inset 0 1px 1px #5d5d5d, inset 0 -1px 0 #b0b0b0, 0 0 0 1px #1a1a1a; outline: 0; user-select: text;
+}
+.fmg-text:focus { background: #f0dab4; }
+.fmg-text.fmg-short { width: 64px; text-align: center; }
+.fmg-text.fmg-invalid { background: #fe8a8a; }
+
+.fmg-btn {
+  height: 28px; min-width: 28px; padding: 0 8px; border: 0; border-radius: 2px; cursor: pointer;
+  font: 600 14px/28px 'Titillium Web', sans-serif; color: #1c1c1c;
+  background: linear-gradient(#a6a6a6, #8e8e8e 35%, #8a8a8a);
+  box-shadow: inset 0 1px 0 #cdcdcd, inset 0 -1px 0 #5d5d5d, 0 0 0 1px #1a1a1a;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.fmg-btn:hover:not(:disabled) { background: linear-gradient(#ffcd70, #f9b44b); box-shadow: inset 0 1px 0 #ffe7b8, 0 0 0 1px #1a1a1a, 0 0 6px rgba(249,180,75,.7); }
+.fmg-btn:active:not(:disabled) { background: #f1be64; }
+.fmg-btn:disabled { cursor: default; opacity: .6; }
+.fmg-btn.fmg-icon { width: 28px; padding: 0; }
+.fmg-btn svg { width: 20px; height: 20px; }
+.fmg-btn.fmg-reset { width: 28px; padding: 0; background: linear-gradient(#ff7b7b, #fe5a5a 40%, #e04444); box-shadow: inset 0 1px 0 #ffb3b3, 0 0 0 1px #1a1a1a; }
+.fmg-btn.fmg-reset:disabled { background: #561919; box-shadow: inset 0 0 0 1px #3a1010, 0 0 0 1px #1a1a1a; opacity: 1; }
+
+/* ---- rows inside the advanced / enemy groups ---- */
+.fmg-group { background: var(--cell); padding: 8px; margin-bottom: 8px; box-shadow: inset 1px 1px 0 #4a494a, inset -1px -1px 0 #262526; }
+.fmg-group-title { font-weight: 700; color: var(--heading); margin-bottom: 4px; display: flex; align-items: center; }
+.fmg-row { display: flex; align-items: center; min-height: 32px; gap: 8px; }
+.fmg-row > .fmg-row-label { flex: 1; }
+.fmg-row .fmg-slider.fmg-plain { width: 208px; margin-right: 4px; }
+.fmg-slider.fmg-plain .fmg-track { top: 8px; height: 4px; background: #1a1a1a; box-shadow: 0 1px 0 #5a5a5a; }
+.fmg-slider.fmg-plain .fmg-fill { top: 7px; height: 6px; }
+.fmg-slider.fmg-plain .fmg-thumb { top: 3px; width: 20px; height: 14px; margin-left: -10px; clip-path: none; border-radius: 2px;
+  background: linear-gradient(#b5b5b5, #929292); box-shadow: 0 0 0 1px #2a2a2a; }
+.fmg-slider.fmg-plain .fmg-thumb::after { left: 6px; right: 6px; top: 3px; bottom: 3px; }
+.fmg-row .fmg-text { width: 80px; }
+.fmg-map-group { display: flex; justify-content: space-between; align-items: flex-start; }
+.fmg-map-group .fmg-group-title { margin-top: 6px; }
+.fmg-row-right { justify-content: flex-end; }
+.fmg-group.fmg-off .fmg-row { opacity: .5; pointer-events: none; }
+
+/* ---- bottom of the settings frame ---- */
+.fmg-exchange { display: flex; justify-content: flex-end; align-items: center; gap: 4px; height: 36px; padding: 0 4px; background: #1f1e1f;
+  box-shadow: inset 0 1px 0 #2e2d2e; }
+.fmg-exchange .fmg-label-bold { margin-right: 6px; }
+
+/* ---- dialog buttons ---- */
+.fmg-footer { display: flex; align-items: center; gap: 8px; margin-top: 20px; height: 32px; }
+.fmg-footer .fmg-drag { height: 32px; margin: 0; }
+.fmg-dialog-btn {
+  position: relative; height: 32px; min-width: 112px; padding: 0 16px; border: 0; cursor: pointer;
+  font: 700 18px/32px 'Titillium Web', sans-serif; color: #1c1c1c;
+  background: linear-gradient(#a6a6a6, #8e8e8e 35%, #8a8a8a);
+}
+.fmg-dialog-btn:hover:not(:disabled) { background: linear-gradient(#ffcd70, #f9b44b); filter: drop-shadow(0 0 4px rgba(249,180,75,.8)); }
+.fmg-dialog-btn:disabled { cursor: default; color: #555; }
+.fmg-back { text-align: left; clip-path: polygon(10px 0, 100% 0, 100% 100%, 10px 100%, 0 50%); padding-left: 16px; }
+.fmg-forward { clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%); padding-right: 22px; display: inline-flex; align-items: center; gap: 6px; }
+.fmg-confirm {
+  width: 208px; text-align: right; padding-right: 26px;
+  background: linear-gradient(#7ccc80, #5eb663 35%, #56a95b);
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 50%, calc(100% - 12px) 100%, 0 100%, 12px 50%);
+}
+.fmg-confirm:hover:not(:disabled) { background: linear-gradient(#a6eeaa, #92e897); filter: drop-shadow(0 0 4px rgba(135,216,139,.8)); }
+
+/* ---- tooltips (the game shows a dark box under the cursor) ---- */
+.fmg-tooltip {
+  position: fixed; z-index: 1000; max-width: 400px; padding: 4px 8px; pointer-events: none; white-space: pre-line;
+  background: rgba(36, 35, 36, .95); color: #fff; font: 400 14px/18px 'Titillium Web', sans-serif;
+  box-shadow: 0 0 0 1px #111, inset 0 1px 0 #444;
+}
+
+/* ---- modal dialogs (import / export) ---- */
+.fmg-modal { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.35); z-index: 10; }
+.fmg-modal .fmg-window { width: 448px; }
+.fmg-textbox {
+  display: block; width: 100%; height: 200px; padding: 4px 6px; border: 0; resize: none; outline: 0; user-select: text;
+  font: 400 14px/18px 'Titillium Web', sans-serif; color: #1c1c1c; background: #8e8e8e; word-break: break-all;
+  box-shadow: inset 0 1px 1px #5d5d5d, 0 0 0 1px #1a1a1a;
+}
+.fmg-textbox:focus { background: #f0dab4; }
+.fmg-textbox::selection { background: #f1be64; }
+.fmg-error { color: #ff8a8a; margin-top: 6px; min-height: 18px; }
+
+/* ---- icons drawn in CSS (stand-ins for the game's sprites) ---- */
+.fmg-planet { display: inline-block; width: 26px; height: 26px; border-radius: 50%; vertical-align: middle;
+  box-shadow: inset -4px -3px 6px rgba(0,0,0,.6), 0 0 2px rgba(0,0,0,.6); background-size: cover; }
+.fmg-planet + .fmg-planet { margin-left: 2px; }
+.fmg-planet[data-planet=nauvis] { background: radial-gradient(circle at 35% 35%, #d2c189 0 12%, #4f9c8a 13% 30%, #3f7f8f 31% 52%, #b59a5a 53% 60%, #2f6d7c 61%); }
+.fmg-planet[data-planet=vulcanus] { background: radial-gradient(circle at 35% 35%, #f7a35a, #b8471c 45%, #5a1e0c 75%); }
+.fmg-planet[data-planet=gleba] { background: radial-gradient(circle at 35% 35%, #f4e58e, #c9a24e 40%, #8b6f3a 70%, #c25c3a); }
+.fmg-planet[data-planet=fulgora] { background: radial-gradient(circle at 35% 35%, #f3a0a0, #b9454f 45%, #4a2a6e 80%); }
+.fmg-planet[data-planet=aquilo] { background: radial-gradient(circle at 35% 35%, #e9f3ff, #5b78b8 45%, #1b2346 80%); }
+.fmg-ico { display: inline-block; width: 18px; height: 18px; flex: none; vertical-align: middle; background-size: contain; background-repeat: no-repeat; }
+.fmg-ico.fmg-ore { position: relative; }
+.fmg-ico.fmg-ore::before, .fmg-ico.fmg-ore::after { content: ''; position: absolute; border-radius: 40% 55% 45% 50%; background: var(--ore, #888);
+  box-shadow: inset -2px -2px 0 rgba(0,0,0,.35), inset 1px 1px 0 rgba(255,255,255,.35); }
+.fmg-ico.fmg-ore::before { left: 1px; top: 6px; width: 11px; height: 10px; }
+.fmg-ico.fmg-ore::after { left: 8px; top: 2px; width: 11px; height: 11px; }
+.fmg-sprite { image-rendering: auto; }
+
+/* Full-screen host for the window on other pages (see newserver.js). */
+.fmg-overlay { position: fixed; inset: 0; z-index: 100; overflow: auto; display: flex; justify-content: center; align-items: flex-start;
+  padding: 24px 8px; background: rgba(12, 10, 9, .88); }

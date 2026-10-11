@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Map generator</title>
+<link rel="stylesheet" href="mapgen.css">
+<style>
+  html, body { margin: 0; min-height: 100%; background: #0d0b0a; }
+  body { display: flex; flex-direction: column; align-items: center; padding: 32px 16px; gap: 16px;
+    background: radial-gradient(ellipse at 50% 30%, #2b2622 0, #14110f 60%, #0b0908 100%) fixed; }
+  .bar { font: 400 14px 'Titillium Web', sans-serif; color: #ccc; display: flex; gap: 12px; align-items: center; }
+  .bar label { display: inline-flex; gap: 6px; align-items: center; }
+  .out { width: 678px; max-width: 100%; }
+  .out .fmg-window { width: 100%; }
+  .out pre { margin: 0; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-all; font: 12px ui-monospace, monospace; color: #ddd; user-select: text; }
+  .out a { color: #7dcaed; }
+</style>
+</head>
+<body>
+<div class="bar fmg">
+  <label><input type="checkbox" id="sa" checked> Space Age</label>
+</div>
+<div id="app"></div>
+<div id="out" class="out fmg" hidden></div>
+<script src="vendor/pako.min.js"></script>
+<script src="mapexchange.js"></script>
+<script src="gamedata.js"></script>
+<script src="mapgen-ui.js"></script>
+<script src="demo.js"></script>
+</body>
+</html>
