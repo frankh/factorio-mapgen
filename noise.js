@@ -808,7 +808,7 @@
   // ((1 - jitter) / 2 + jitter * u) within the cell, plus an id in [0, 1).
   // cell_id is the nearest point's id, spot the distance to it (in cells),
   // facet the gap to the second nearest, pyramid the distance to the cell's
-  // edge (euclidean only so far).
+  // edge. The game keeps grid_size as a 16-bit integer.
   function jenkinsHead(a) {
     a = (a + 0x7ed55d16 + (a << 12)) >>> 0;
     a = ((a ^ 0xc761c23c) ^ (a >>> 19)) >>> 0;
@@ -837,6 +837,21 @@
       return gameFastPow(fr(fr(fr(dx * dx) * dx) + fr(fr(dy * dy) * dy)), 0.3333333432674408);
     },
   };
+  // Euclidean distance from q to the manhattan bisector of a and b: a ray,
+  // a 45-degree segment and a ray.
+  function segDist(px, py, ax, ay, bx, by) {
+    var vx = bx - ax, vy = by - ay, l = vx * vx + vy * vy;
+    var t = l === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / l));
+    return Math.hypot(px - ax - t * vx, py - ay - t * vy);
+  }
+  function l1BisectorDistance(qx, qy, ax, ay, bx, by) {
+    var dx = bx - ax, dy = by - ay, px = qx - ax, py = qy - ay, t;
+    if (dx < 0) { dx = -dx; px = -px; }
+    if (dy < 0) { dy = -dy; py = -py; }
+    if (dy > dx) { t = dx; dx = dy; dy = t; t = px; px = py; py = t; }
+    var x1 = (dx + dy) / 2, x2 = (dx - dy) / 2, far = 1e9;
+    return Math.min(segDist(px, py, x1, 0, x2, dy), segDist(px, py, x1, 0, x1, -far), segDist(px, py, x2, dy, x2, far));
+  }
   function evalVoronoi(nd, a, n, alloc) {
     var e = nd.extra, out = alloc();
     var xs = arr(a[0], n), ys = arr(a[1], n);
@@ -849,7 +864,10 @@
     for (var i = 0; i < n; i++) {
       var qx = fr(xs[i] / g), qy = fr(ys[i] / g), cx = Math.floor(qx), cy = Math.floor(qy);
       var d1 = Infinity, d2 = Infinity, id = 0, ax = 0, ay = 0, pts = [];
-      for (var j = cy - 1; j <= cy + 1; j++) for (var k = cx - 1; k <= cx + 1; k++) {
+      // Manhattan and chebyshev pyramids look two cells out: with full jitter
+      // a cell edge can come from there (as the game does).
+      var R = e.mode === 'pyramid' && e.type !== 'euclidean' ? 2 : 1;
+      for (var j = cy - R; j <= cy + R; j++) for (var k = cx - R; k <= cx + R; k++) {
         var c = cellAt(k, j), px = fr(k + c[0]), py = fr(j + c[1]);
         var d = dist(fr(qx - px), fr(qy - py));
         if (e.mode === 'pyramid') pts.push(px, py);
@@ -863,8 +881,16 @@
         for (var m = 0; m < pts.length; m += 2) {
           var bx = pts[m], by = pts[m + 1];
           if (bx === ax && by === ay) continue;
-          var l = Math.hypot(bx - ax, by - ay);
-          var v = ((qx - bx) * (qx - bx) + (qy - by) * (qy - by) - (qx - ax) * (qx - ax) - (qy - ay) * (qy - ay)) / (2 * l);
+          var v;
+          if (e.type === 'euclidean') {
+            var l = Math.hypot(bx - ax, by - ay);
+            v = ((qx - bx) * (qx - bx) + (qy - by) * (qy - by) - (qx - ax) * (qx - ax) - (qy - ay) * (qy - ay)) / (2 * l);
+          } else if (e.type === 'manhattan') {
+            v = l1BisectorDistance(qx, qy, ax, ay, bx, by);
+          } else {
+            // Chebyshev is manhattan turned 45 degrees (the game scales by 0.75).
+            v = l1BisectorDistance(0.75 * (qx + qy), 0.75 * (qx - qy), 0.75 * (ax + ay), 0.75 * (ax - ay), 0.75 * (bx + by), 0.75 * (bx - by));
+          }
           if (v < best) best = v;
         }
         out[i] = best;
@@ -878,10 +904,10 @@
       var type = t && t.k === 'str' ? t.v : 'euclidean';
       if (!VORONOI_DIST[type]) throw new Error('voronoi: unknown distance type ' + type);
       var mode = name.replace('_noise', '');
-      if (mode === 'pyramid' && type !== 'euclidean') throw new Error('voronoi_pyramid_noise with ' + type + ' distance is not supported here');
+      if (mode === 'pyramid' && type === 'minkowski3') throw new Error('voronoi_pyramid_noise does not support minkowski3 distance');
       return b.node('voronoi', [h.arg('x'), h.arg('y')], {
         mode: mode, type: type, seed: ((h.konst('seed0') >>> 0) + h.seed1()) >>> 0,
-        grid: fr(h.konst('grid_size')), jitter: fr(h.konst('jitter', 1)),
+        grid: Math.trunc(h.konst('grid_size')) & 0xFFFF, jitter: fr(h.konst('jitter', 1)),
       });
     };
   });

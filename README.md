@@ -107,9 +107,8 @@ canvas the player can drag around.
 For Nauvis the result matches `factorio --generate-map-preview` on 99.8% of
 pixels in a 256x256 view and 98.7% at 1024x1024. Terrain is exact. What
 remains is cliffs (not drawn yet) and enemy bases, which the game thins out
-in a way not reproduced yet. Vulcanus, Gleba and Aquilo are close; Fulgora
-needs voronoi pyramid noise with manhattan/chebyshev distance, which isn't
-done, so the page asks the server for it (below).
+in a way not reproduced yet. Vulcanus, Gleba, Aquilo and Fulgora render too,
+less exactly (cliffs and some planet-specific entities are missing).
 
 ### How the game does it
 
