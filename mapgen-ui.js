@@ -79,6 +79,9 @@
     scrap: '#8e6c4e', 'lithium-brine': '#d6ecea', 'fluorine-vent': '#79c8ee',
   };
 
+  // The preview covers this many tiles each way, one pixel per tile.
+  const PREVIEW_SIZE = 1024;
+
   // The game's GUI glyphs (icons/*.png), drawn as masks so CSS sets their colour.
   const ICON_BASE = (() => {
     const src = document.currentScript && document.currentScript.src;
@@ -279,7 +282,7 @@
       this.tip(importBtn, () => this.t('gui-map-generator', 'import-exchange-string-tt'));
       this.tip(exportBtn, () => this.t('gui-map-generator', 'export-exchange-string-tt'));
 
-      const canPreview = !!this.opts.previewUrl;
+      const canPreview = typeof Worker !== 'undefined';
       const previewBtn = this.previewOpen
         ? el('button', { class: 'fmg-dialog-btn fmg-back fmg-close-preview', type: 'button', onclick: () => { this.previewOpen = false; this.render(); } },
           glyph('close'), this.t('gui-map-generator', 'hide-preview'))
@@ -376,11 +379,15 @@
     // Re-render after a change without losing the scroll position.
     changed() { this.render(); }
 
-    // ---- preview (rendered by the server with the real game) ----
+    // ---- preview ----
+    //
+    // Rendered in the browser, as the game does: Web Workers run the game's
+    // own noise expressions (noise.js, preview.js) a chunk at a time,
+    // nearest the middle first, terrain before entities. Ungenerated chunks
+    // stay black. The picture is 1 pixel per tile and can be dragged.
 
-    previewRequest() {
-      const mgs = this.result().mapGenSettings;
-      return JSON.stringify({ map_gen_settings: mgs, space_age: this.modset === 'space-age', planet: this.previewPlanet || 'nauvis', size: 1024 });
+    previewKey() {
+      return JSON.stringify([this.modset, this.previewPlanet || 'nauvis', this.result().mapGenSettings]);
     }
 
     renderPreview() {
@@ -388,65 +395,139 @@
       // Auto-refresh starts off, as in the game.
       const st = this.previewState || (this.previewState = { auto: false });
       const planets = this.modsetData.planets;
-      const img = st.url ? el('img', { class: 'fmg-preview-img', src: st.url, alt: '', onload: (e) => this.centrePreview(e.target) }) : null;
-      const status = st.loading ? el('div', { class: 'fmg-preview-status' }, '…')
-        : st.error ? el('div', { class: 'fmg-preview-status fmg-error' }, G('preview-error') + (st.error ? '\n' + st.error : '')) : null;
+      if (!this.previewCanvas) {
+        const c = el('canvas', { class: 'fmg-preview-canvas', width: PREVIEW_SIZE, height: PREVIEW_SIZE });
+        this.previewCanvas = c;
+      }
+      const status = st.error ? el('div', { class: 'fmg-preview-status fmg-error' }, G('preview-error') + '\n' + st.error) : null;
       const refresh = el('button', { class: 'fmg-btn fmg-icon', type: 'button', 'aria-label': this.t('gui', 'refresh'), onclick: () => this.loadPreview(true) }, glyph('refresh'));
       this.tip(refresh, () => this.t('gui', 'refresh'));
-      const auto = this.checkbox(st.auto, (v) => { st.auto = v; }, G('preview-auto-update'), G('preview-auto-update-tt'));
+      const auto = this.checkbox(st.auto, (v) => { st.auto = v; if (v) this.loadPreview(false); }, G('preview-auto-update'), G('preview-auto-update-tt'));
       const planet = this.dropdown({
         label: 'Planet', width: 116, value: this.previewPlanet || 'nauvis',
         options: planets.map((p) => ({ value: p.name, text: p.label, icon: this.iconBase + 'planet/' + p.name + '.png' })),
         onChange: (v) => { this.previewPlanet = v; this.loadPreview(true); },
       });
+      const frame = el('div', { class: 'fmg-preview-frame' }, this.previewCanvas, status);
+      this.dragToScroll(frame);
       return el('div', { class: 'fmg-deep fmg-preview' },
         el('div', { class: 'fmg-subheader' }, el('div', { class: 'fmg-spacer' }), auto, planet, refresh),
-        el('div', { class: 'fmg-preview-frame' + (st.loading ? ' fmg-loading' : ''), onscroll: (e) => { this.previewScroll = [e.target.scrollLeft, e.target.scrollTop]; } }, img, status));
+        frame);
     }
 
-    // Start a new map scrolled to its middle (the spawn), like the game.
-    centrePreview(img) {
-      const frame = img.parentElement;
-      if (!frame) return;
-      if (this.previewCentred === img.src && this.previewScroll) {
-        [frame.scrollLeft, frame.scrollTop] = this.previewScroll;
-        return;
-      }
-      this.previewCentred = img.src;
-      frame.scrollLeft = (frame.scrollWidth - frame.clientWidth) / 2;
-      frame.scrollTop = (frame.scrollHeight - frame.clientHeight) / 2;
+    // Drag the map around, as in the game.
+    dragToScroll(frame) {
+      let drag = null;
+      frame.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0 || e.target !== this.previewCanvas) return;
+        drag = { x: e.clientX, y: e.clientY, l: frame.scrollLeft, t: frame.scrollTop, id: e.pointerId };
+        frame.setPointerCapture(e.pointerId);
+        frame.classList.add('fmg-dragging');
+        e.preventDefault();
+      });
+      frame.addEventListener('pointermove', (e) => {
+        if (!drag || e.pointerId !== drag.id) return;
+        const z = parseFloat(this.root.style.zoom) || 1;
+        frame.scrollLeft = drag.l - (e.clientX - drag.x) / z;
+        frame.scrollTop = drag.t - (e.clientY - drag.y) / z;
+      });
+      const end = (e) => {
+        if (!drag || e.pointerId !== drag.id) return;
+        drag = null;
+        frame.classList.remove('fmg-dragging');
+      };
+      frame.addEventListener('pointerup', end);
+      frame.addEventListener('pointercancel', end);
+      frame.addEventListener('scroll', () => { this.previewScroll = [frame.scrollLeft, frame.scrollTop]; });
+      // Keep the position across re-renders; start in the middle (the spawn).
+      requestAnimationFrame(() => {
+        if (this.previewScroll) [frame.scrollLeft, frame.scrollTop] = this.previewScroll;
+        else {
+          frame.scrollLeft = (frame.scrollWidth - frame.clientWidth) / 2;
+          frame.scrollTop = (frame.scrollHeight - frame.clientHeight) / 2;
+        }
+      });
     }
 
     schedulePreview() {
       const st = this.previewState;
-      if (!st || (!st.auto && (st.url || st.error || st.loading))) return;
+      if (!st || (!st.auto && st.key)) return;
       clearTimeout(this.previewTimer);
-      this.previewTimer = setTimeout(() => this.loadPreview(false), 400);
+      this.previewTimer = setTimeout(() => this.loadPreview(false), 300);
+    }
+
+    workers() {
+      if (this.previewWorkers) return this.previewWorkers;
+      const n = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
+      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=1';
+      this.previewWorkers = [];
+      for (let i = 0; i < n; i++) {
+        const w = new Worker(url);
+        w.onmessage = (e) => this.onPreviewMessage(e.data);
+        w.onerror = (e) => this.onPreviewMessage({ type: 'error', job: this.previewJob, message: e.message || 'worker failed' });
+        this.previewWorkers.push(w);
+      }
+      return this.previewWorkers;
     }
 
     loadPreview(force) {
       const st = this.previewState;
-      const body = this.previewRequest();
-      if (!force && body === st.lastBody) return;
-      st.lastBody = body;
-      const seq = (this.previewSeq = (this.previewSeq || 0) + 1);
-      st.loading = true; st.error = '';
+      const key = this.previewKey();
+      if (!force && key === st.key) return;
+      st.key = key; st.error = '';
+      const job = (this.previewJob = (this.previewJob || 0) + 1);
+      const ctx = this.previewCanvas.getContext('2d');
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, PREVIEW_SIZE, PREVIEW_SIZE);
+      let workers;
+      try { workers = this.workers(); } catch (e) { st.error = String(e.message || e); this.updatePreviewView(); return; }
+      // Chunks nearest the middle first, dealt round-robin so every worker
+      // works outwards together.
+      const half = PREVIEW_SIZE / 32 / 2, all = [];
+      for (let cy = -half; cy < half; cy++) for (let cx = -half; cx < half; cx++) all.push([cx, cy]);
+      const ring = (c) => Math.max(Math.abs(c[0] + 0.5), Math.abs(c[1] + 0.5));
+      all.sort((a, b) => ring(a) - ring(b) || Math.atan2(a[1] + 0.5, a[0] + 0.5) - Math.atan2(b[1] + 0.5, b[0] + 0.5));
+      const mgs = this.result().mapGenSettings;
+      workers.forEach((w, i) => w.postMessage({
+        type: 'start', job, modset: this.modset, planet: this.previewPlanet || 'nauvis', mgs, scale: 1,
+        chunks: all.filter((_, k) => k % workers.length === i),
+      }));
       this.updatePreviewView();
+    }
+
+    onPreviewMessage(m) {
+      if (m.job !== this.previewJob) return;
+      if (m.type === 'chunk') {
+        const ctx = this.previewCanvas.getContext('2d');
+        const half = PREVIEW_SIZE / 2;
+        ctx.putImageData(new ImageData(new Uint8ClampedArray(m.pixels.buffer), m.w, m.h), half + m.cx * 32, half + m.cy * 32);
+      } else if (m.type === 'error') {
+        this.previewWorkers.forEach((w) => w.postMessage({ type: 'stop', job: m.job }));
+        // Something this page can't compute yet (e.g. a planet using noise
+        // functions not reproduced here): ask the server, which runs the game.
+        if (this.opts.previewUrl) this.serverPreview(m.job, m.message);
+        else this.previewFailed(m.message);
+      }
+    }
+
+    previewFailed(message) {
+      this.previewState.error = message;
+      this.previewState.key = '';
+      this.updatePreviewView();
+    }
+
+    serverPreview(job, why) {
       const headers = { 'Content-Type': 'application/json' };
       if (this.opts.csrf) headers['X-CSRF-Token'] = this.opts.csrf;
+      const body = JSON.stringify({ map_gen_settings: this.result().mapGenSettings, space_age: this.modset === 'space-age', planet: this.previewPlanet || 'nauvis', size: PREVIEW_SIZE });
       fetch(this.opts.previewUrl, { method: 'POST', headers, body, credentials: 'same-origin' })
         .then((r) => (r.ok ? r.blob() : r.text().then((t) => { throw new Error(t.trim()); })))
-        .then((blob) => {
-          if (seq !== this.previewSeq) return;
-          if (st.url) URL.revokeObjectURL(st.url);
-          st.url = URL.createObjectURL(blob); st.loading = false;
-          this.updatePreviewView();
+        .then((blob) => createImageBitmap(blob))
+        .then((img) => {
+          if (job !== this.previewJob) return;
+          this.previewCanvas.getContext('2d').drawImage(img, 0, 0, PREVIEW_SIZE, PREVIEW_SIZE);
         })
-        .catch((e) => {
-          if (seq !== this.previewSeq) return;
-          st.loading = false; st.error = e.message || ''; st.lastBody = '';
-          this.updatePreviewView();
-        });
+        .catch((e) => { if (job === this.previewJob) this.previewFailed(e.message || why); });
     }
 
     // Swap just the preview pane, so typing and dragging aren't disturbed.

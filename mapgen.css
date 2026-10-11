@@ -282,8 +282,8 @@
 .fmg-preview-frame::-webkit-scrollbar-track { background: #242324; }
 .fmg-preview-frame::-webkit-scrollbar-thumb { background: #8e8e8e; border: 2px solid #242324; border-radius: 2px; }
 .fmg-preview-frame::-webkit-scrollbar-corner { background: #242324; }
-.fmg-preview-img { display: block; width: 1024px; height: 1024px; max-width: none; image-rendering: pixelated; }
-.fmg-preview-frame.fmg-loading .fmg-preview-img { opacity: .55; }
+.fmg-preview-canvas { display: block; width: 1024px; height: 1024px; max-width: none; image-rendering: pixelated; cursor: grab; touch-action: none; }
+.fmg-preview-frame.fmg-dragging .fmg-preview-canvas { cursor: grabbing; }
 .fmg-preview-status { position: absolute; left: 0; right: 0; top: 45%; text-align: center; padding: 0 24px; white-space: pre-line; color: #fff; text-shadow: 0 1px 2px #000; }
 .fmg-preview-status.fmg-error { color: #ff9a9a; }
 .fmg-glyph-refresh { width: 17px; height: 16px; }
