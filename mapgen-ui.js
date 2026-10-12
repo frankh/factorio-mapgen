@@ -79,8 +79,10 @@
     scrap: '#8e6c4e', 'lithium-brine': '#d6ecea', 'fluorine-vent': '#79c8ee',
   };
 
-  // The preview covers this many tiles each way, one pixel per tile.
-  const PREVIEW_SIZE = 1024;
+  // The preview covers this many tiles each way and, as in the game, draws
+  // one tile per screen pixel (not per CSS pixel), so a scaled display or a
+  // zoomed-out window still shows as much of the map as the game does.
+  const PREVIEW_SIZE = 2048;
 
   // The game's GUI glyphs (icons/*.png), drawn as masks so CSS sets their colour.
   const ICON_BASE = (() => {
@@ -422,10 +424,35 @@
         onChange: (v) => { this.previewPlanet = v; this.loadPreview(true); },
       });
       const frame = el('div', { class: 'fmg-preview-frame' }, this.previewCanvas, status);
+      // After the host has set the window's zoom, and before the first scroll.
+      requestAnimationFrame(() => this.sizePreviewCanvas());
+      if (!this.onPreviewResize) {
+        this.onPreviewResize = () => {
+          if (!this.root.isConnected) window.removeEventListener('resize', this.onPreviewResize);
+          else requestAnimationFrame(() => this.sizePreviewCanvas());
+        };
+        window.addEventListener('resize', this.onPreviewResize);
+      }
       this.dragToScroll(frame);
       return el('div', { class: 'fmg-deep fmg-preview' },
         el('div', { class: 'fmg-subheader' }, el('div', { class: 'fmg-spacer' }), auto, planet, refresh),
         frame);
+    }
+
+    sizePreviewCanvas() {
+      const c = this.previewCanvas;
+      if (!c) return;
+      const z = parseFloat(this.root.style.zoom) || 1;
+      const css = PREVIEW_SIZE / ((window.devicePixelRatio || 1) * z) + 'px';
+      if (c.style.width === css) return;
+      const frame = c.parentNode;
+      // Keep the same spot in the middle of the view.
+      const keep = frame && c.offsetWidth ? [(frame.scrollLeft + frame.clientWidth / 2) / c.offsetWidth, (frame.scrollTop + frame.clientHeight / 2) / c.offsetHeight] : null;
+      c.style.width = c.style.height = css;
+      if (keep && frame.isConnected) {
+        frame.scrollLeft = keep[0] * c.offsetWidth - frame.clientWidth / 2;
+        frame.scrollTop = keep[1] * c.offsetHeight - frame.clientHeight / 2;
+      }
     }
 
     // Drag the map around, as in the game.

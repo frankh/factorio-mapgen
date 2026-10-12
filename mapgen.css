@@ -286,7 +286,7 @@
 /* The map pans by dragging (or the wheel), as in the game, so no scrollbars. */
 .fmg-preview-frame { scrollbar-width: none; }
 .fmg-preview-frame::-webkit-scrollbar { display: none; }
-.fmg-preview-canvas { display: block; width: 1024px; height: 1024px; max-width: none; image-rendering: pixelated; cursor: grab; touch-action: none; }
+.fmg-preview-canvas { display: block; width: 2048px; height: 2048px; max-width: none; image-rendering: pixelated; cursor: grab; touch-action: none; }
 .fmg-preview-frame.fmg-dragging .fmg-preview-canvas { cursor: grabbing; }
 .fmg-preview-status { position: absolute; left: 0; right: 0; top: 45%; text-align: center; padding: 0 24px; white-space: pre-line; color: #fff; text-shadow: 0 1px 2px #000; }
 .fmg-preview-status.fmg-error { color: #ff9a9a; }
