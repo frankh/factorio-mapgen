@@ -451,13 +451,16 @@
       frame.scrollLeft = centre[0] * c.offsetWidth - frame.clientWidth / 2;
       frame.scrollTop = centre[1] * c.offsetHeight - frame.clientHeight / 2;
       this.previewCentre = centre;
+      // Scroll events from this placement (or the frame resizing before the
+      // next one) aren't the player moving the map.
+      this.previewPlaced = [frame.scrollLeft, frame.scrollTop, frame.clientWidth, frame.clientHeight];
     }
 
     // Resizing, browser zoom and moving to a screen with another scale all
     // change the device pixel ratio; not all of them fire a resize.
     watchPixelRatio() {
-      if (this.previewWatch) return;
-      const resize = () => requestAnimationFrame(() => this.sizePreviewCanvas());
+      if (this.previewWatch || this.destroyed) return;
+      const resize = () => requestAnimationFrame(() => this.sizePreviewCanvas(true));
       let mq = null;
       const listen = () => {
         if (mq) mq.removeEventListener('change', onRatio);
@@ -473,7 +476,8 @@
     // For a host that removes the window: stop the preview and let go of it.
     destroy() {
       clearTimeout(this.previewTimer);
-      (this.previewWorkers || []).forEach((w) => w.terminate());
+      this.destroyed = true;
+      (this.previewWorkers || []).forEach((w) => { w.onmessage = w.onerror = null; w.terminate(); });
       this.previewWorkers = null;
       if (this.previewWatch) this.previewWatch();
       this.previewWatch = null;
@@ -506,8 +510,9 @@
       // Remember the map point in the middle of the view; it starts at the
       // spawn and is put back after re-renders by sizePreviewCanvas.
       frame.addEventListener('scroll', () => {
-        const c = this.previewCanvas;
+        const c = this.previewCanvas, at = this.previewPlaced;
         if (!frame.isConnected || !c.offsetWidth) return;
+        if (at && (frame.clientWidth !== at[2] || frame.clientHeight !== at[3] || (frame.scrollLeft === at[0] && frame.scrollTop === at[1]))) return;
         this.previewCentre = [(frame.scrollLeft + frame.clientWidth / 2) / c.offsetWidth, (frame.scrollTop + frame.clientHeight / 2) / c.offsetHeight];
       });
     }
@@ -569,7 +574,7 @@
     }
 
     onPreviewMessage(m) {
-      if (m.job !== this.previewJob) return;
+      if (this.destroyed || m.job !== this.previewJob) return;
       if (m.type === 'chunk') {
         const ctx = this.previewCanvas.getContext('2d');
         const half = PREVIEW_SIZE / 2;
