@@ -615,9 +615,10 @@
     // of each group, as place() picks, with a probability of at least a
     // half and positive richness) its map colour. (The full preview draws
     // ore on alternate 2x2 squares; here a patch is only a few pixels.)
-    function overviewChunk(cx, cy) {
+    // Pass 0 is the tiles alone, which are quick; pass 1 adds the ore.
+    function overviewChunk(cx, cy, ore) {
       var p = positions(cx, cy), n = CHUNK * CHUNK;
-      var r = chunkProg.run(p[0], p[1], null), px = new Uint8ClampedArray(n * 4), ids = new Int16Array(n).fill(-1);
+      var r = (ore ? chunkProg : tileProg).run(p[0], p[1], null), px = new Uint8ClampedArray(n * 4), ids = new Int16Array(n).fill(-1);
       var best = new Float32Array(n).fill(-Infinity), k, t;
       for (t = 0; t < tiles.length; t++) {
         var rt = r[t];
@@ -627,7 +628,7 @@
         var c = ids[k] >= 0 ? colors[ids[k]] : BLACK;
         px[k * 4] = c[0]; px[k * 4 + 1] = c[1]; px[k * 4 + 2] = c[2]; px[k * 4 + 3] = 255;
       }
-      for (var g = 0; g < groups.length; g++) {
+      for (var g = 0; ore && g < groups.length; g++) {
         var grp = groups[g];
         for (k = 0; k < n; k++) {
           var tile = ids[k] < 0 ? 0 : ids[k], bp = -Infinity, br = 0, be = null;
@@ -653,7 +654,7 @@
     }
 
     if (overview) {
-      return { passes: 1, overview: true, render: function (pass, cx, cy) { return overviewChunk(cx, cy); }, trim: function () {} };
+      return { passes: groups.length ? 2 : 1, overview: true, render: function (pass, cx, cy) { return overviewChunk(cx, cy, pass > 0); }, trim: function () {} };
     }
     return {
       passes: entities0 >= 0 || cliffs ? 2 : 1,

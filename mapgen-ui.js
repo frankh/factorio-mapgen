@@ -83,9 +83,11 @@
 
   // The preview's zoom, in tiles per screen pixel (1 is the game's), and the
   // most chunks it keeps drawn.
-  // Tiles per screen pixel at each zoom step, nearest first; the last is as
-  // far out as the view goes.
-  const ZOOMS = [0.25, 0.5, 1, 2, 4, 8, 16], MAX_ZOOM = ZOOMS[ZOOMS.length - 1];
+  // Tiles per device pixel at each zoom step, nearest first. Zoomed out, the
+  // view goes as far as MAX_ZOOM tiles per CSS pixel, and draws a pixel per
+  // CSS pixel (on a high-density screen, each covers several device pixels),
+  // so the levels it draws go up to MAX_ZOOM.
+  const ZOOMS = [0.25, 0.5, 1, 2, 4, 8, 16], MAX_ZOOM = 16;
   // Wheel travel per zoom step, and the wait after the last zoom step before
   // asking for the new level's chunks.
   const WHEEL_STEP = 60, ZOOM_SETTLE = 250;
@@ -471,7 +473,20 @@
     // chunk arrives.
 
     level() {
-      return Math.max(1, Math.min(MAX_ZOOM, this.view.z));
+      const z = this.view.z;
+      return z <= 1 ? 1 : Math.min(MAX_ZOOM, z * this.pixelRatio());
+    }
+
+    // Device pixels per CSS pixel, to a power of two.
+    pixelRatio() {
+      const k = (window.devicePixelRatio || 1) * (parseFloat(this.root.style.zoom) || 1);
+      return Math.max(1, Math.pow(2, Math.round(Math.log2(k))));
+    }
+
+    // The zoom steps this screen can use.
+    zooms() {
+      const k = this.pixelRatio();
+      return ZOOMS.filter((z) => z <= 1 || z * k <= MAX_ZOOM);
     }
 
     // Device pixels of the preview, and its size in them.
@@ -500,9 +515,10 @@
     zoomView(dir, px, py) {
       const v = this.view, size = this.canvasSize();
       if (!size) return;
-      let i = ZOOMS.indexOf(v.z);
-      if (i < 0) i = ZOOMS.indexOf(1);
-      const nz = ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, i + dir))];
+      const zooms = this.zooms();
+      let i = zooms.indexOf(v.z);
+      if (i < 0) i = zooms.indexOf(1);
+      const nz = zooms[Math.max(0, Math.min(zooms.length - 1, i + dir))];
       if (nz === v.z) return;
       const dx = (px === undefined ? (size[0] >> 1) : px) - (size[0] >> 1), dy = (py === undefined ? (size[1] >> 1) : py) - (size[1] >> 1);
       v.x += dx * (v.z - nz); v.y += dy * (v.z - nz);
@@ -551,18 +567,26 @@
       if (!this.previewJob || !this.previewWorkers || (st && st.error) || this.zoomTimer) return;
       const L = this.level(), chunks = this.visibleChunks(L);
       // The same chunks as last time: the workers already have the list.
-      const key = this.previewJob + ':' + L + ':' + (chunks.length && chunks[0]) + ':' + chunks.length + ':' + (chunks.length && chunks[chunks.length - 1]);
+      const key = this.previewJob + ':' + L + ':' + (chunks.length && chunks[0]) + ':' + chunks.length + ':' + (chunks.length && chunks[chunks.length - 1]) + ':' + !!this.dragging;
       if (key === this.wantKey) return;
       this.wantKey = key;
       const cache = this.chunkCache, lists = this.previewWorkers.map(() => []);
+      const want = (M, cx, cy, only) => {
+        let h = Math.imul(cx >> 3, 0x9e3779b1) ^ Math.imul(cy >> 3, 0x85ebca6b) ^ M;
+        h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+        lists[((h ^ (h >>> 12)) >>> 0) % lists.length].push(only ? [M, cx, cy, 1] : [M, cx, cy]);
+      };
+      // First the coarsest level's tiles, a few quick chunks to show under
+      // the view's level until it arrives.
+      if (L < MAX_ZOOM) {
+        for (const [cx, cy] of this.visibleChunks(MAX_ZOOM)) if (!cache.has(MAX_ZOOM + ':' + cx + ',' + cy)) want(MAX_ZOOM, cx, cy, true);
+      }
       for (const [cx, cy] of chunks) {
         const got = cache.get(L + ':' + cx + ',' + cy);
-        if (got && got.last) continue;
-        let h = Math.imul(cx >> 3, 0x9e3779b1) ^ Math.imul(cy >> 3, 0x85ebca6b) ^ L;
-        h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
-        lists[((h ^ (h >>> 12)) >>> 0) % lists.length].push([L, cx, cy]);
+        if (!got || !got.last) want(L, cx, cy, false);
       }
-      this.previewWorkers.forEach((w, i) => w.postMessage({ type: 'want', job: this.previewJob, items: lists[i] }));
+      // While dragging, only the quick first pass: the rest once it stops.
+      this.previewWorkers.forEach((w, i) => w.postMessage({ type: 'want', job: this.previewJob, items: lists[i], quick: !!this.dragging }));
     }
 
     drawView() {
@@ -574,6 +598,7 @@
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, size[0], size[1]);
       this.arrived = [];
+      this.redrawAll = false;
       if (!this.blocks) return;
       // Coarser levels first: they show through where the view's level has
       // no chunk yet.
@@ -676,6 +701,7 @@
         pointers.set(e.pointerId, at(e));
         frame.setPointerCapture(e.pointerId);
         frame.classList.add('fmg-dragging');
+        this.dragging = true;
         if (pointers.size === 2) { const [a, b] = [...pointers.values()]; pinch = Math.hypot(a[0] - b[0], a[1] - b[1]); }
         frame.focus({ preventScroll: true });
         e.preventDefault();
@@ -705,7 +731,11 @@
       const end = (e) => {
         if (!pointers.delete(e.pointerId)) return;
         pinch = 0;
-        if (!pointers.size) frame.classList.remove('fmg-dragging');
+        if (!pointers.size) {
+          frame.classList.remove('fmg-dragging');
+          this.dragging = false;
+          this.requestSoon();
+        }
       };
       frame.addEventListener('pointerup', end);
       frame.addEventListener('pointercancel', end);
@@ -753,7 +783,7 @@
     workers() {
       if (this.previewWorkers) return this.previewWorkers;
       const n = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
-      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=12';
+      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=13';
       this.previewWorkers = [];
       for (let i = 0; i < n; i++) {
         const w = new Worker(url);
@@ -791,13 +821,15 @@
         // Draw just the new chunks, once a frame, unless the whole view is
         // being redrawn anyway.
         if (m.level === this.level()) (this.arrived || (this.arrived = [])).push([m.cx, m.cy, b]);
+        else this.redrawAll = true;
         if (!this.drawPending && !this.viewFrame) {
           this.drawPending = requestAnimationFrame(() => {
             this.drawPending = 0;
             const size = this.canvasSize(), L = this.level(), c = this.previewCanvas;
             const list = this.arrived || [];
             this.arrived = [];
-            if (!size || c.width !== size[0] || c.height !== size[1]) { this.drawView(); return; }
+            // A coarser chunk goes under the others: draw them all again.
+            if (this.redrawAll || !size || c.width !== size[0] || c.height !== size[1]) { this.drawView(); return; }
             const ctx = c.getContext('2d');
             ctx.imageSmoothingEnabled = false;
             for (const [cx, cy, b] of list) {
