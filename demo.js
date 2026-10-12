@@ -1,6 +1,6 @@
 // The standalone map generator page (index.html).
 const data = Object.values(window.FactorioMapGenData)[0];
-const sa = document.getElementById('sa');
+const app = document.getElementById('app');
 const out = document.getElementById('out');
 const params = new URLSearchParams(location.search);
 const download = (name, obj) => {
@@ -8,9 +8,18 @@ const download = (name, obj) => {
   a.href = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' }));
   a.download = name; a.textContent = name; return a;
 };
-const gen = FactorioMapGen.mount(document.getElementById('app'), {
+// The window is the game's width; with the preview open it fills the page.
+// On narrow screens it is scaled down to fit.
+const fit = (g) => {
+  const avail = document.body.clientWidth - 32;
+  const zoom = Math.min(1, avail / (g.previewOpen ? 1161 : 677));
+  g.root.style.zoom = String(zoom);
+  g.root.style.setProperty('--fmg-full-width', Math.max(1161, Math.floor(avail / zoom)) + 'px');
+};
+const gen = FactorioMapGen.mount(app, {
   data, modset: params.get('modset') || 'space-age', exchangeString: params.get('s') || undefined,
-  onModsetChange: (m) => { sa.checked = m === 'space-age'; },
+  modsetToggle: true,
+  onChange: fit,
   onBack: () => { out.hidden = true; },
   onPlay: (r) => {
     out.hidden = false; out.textContent = '';
@@ -23,6 +32,6 @@ const gen = FactorioMapGen.mount(document.getElementById('app'), {
     out.scrollIntoView({ behavior: 'smooth' });
   },
 });
-sa.checked = gen.modset === 'space-age';
-sa.addEventListener('change', () => gen.setModset(sa.checked ? 'space-age' : 'vanilla'));
+fit(gen);
+window.addEventListener('resize', () => fit(gen));
 window.gen = gen;

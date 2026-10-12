@@ -6,6 +6,7 @@
 //     exchangeString: '>>>…<<<',            // optional starting settings
 //     onPlay(result) {}, onBack() {},       // result: {exchangeString, mapGenSettings, mapSettings}
 //     iconBase: '/icons/',                  // optional: where the game icons live (default: icons/ next to this script)
+//     modsetToggle: true,                   // optional: a Space Age checkbox beside the seed
 //   });
 //
 // Needs vendor/pako.min.js, mapexchange.js and gamedata.js loaded first.
@@ -311,6 +312,12 @@
           el('div', { class: 'fmg-subheader' },
             presetSelect, resetWrap,
             el('div', { class: 'fmg-spacer' }),
+            this.opts.modsetToggle && this.data.modsets['space-age'] && this.data.modsets.vanilla
+              ? el('span', { class: 'fmg-modset' }, this.checkbox(this.modset === 'space-age', (v) => {
+                this.setModset(v ? 'space-age' : 'vanilla');
+                if (this.opts.onModsetChange) this.opts.onModsetChange(this.modset);
+              }, 'Space Age'))
+              : null,
             el('span', { class: 'fmg-label-bold fmg-seed-label' }, this.t('gui-map-generator', 'map-seed')), seedInput, shuffle),
           el('div', { class: 'fmg-desc' }, preset ? preset.description : ''),
           el('div', { class: 'fmg-tabbar', role: 'tablist' }, tabs.map(([id, label]) => el('button', {

@@ -62,6 +62,8 @@
 .fmg-subheader .fmg-spacer { flex: 1; }
 .fmg-label-bold { font-weight: 700; color: var(--heading); }
 .fmg-seed-label { margin-right: 8px; }
+.fmg-modset { margin-right: 24px; }
+.fmg-modset .fmg-check { color: #fff; }
 
 .fmg-desc {
   background: var(--shallow); height: 60px; padding: 6px 12px; color: #fff; overflow: hidden;
