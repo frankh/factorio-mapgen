@@ -267,10 +267,10 @@
           const v = e.target.value.trim();
           const ok = /^\d+$/.test(v) && Number(v) <= 4294967295;
           e.target.classList.toggle('fmg-invalid', !ok);
-          if (ok) this.seed = Number(v);
+          if (ok) { this.seed = Number(v); this.seedChanged(); }
         },
       });
-      const shuffle = el('button', { class: 'fmg-btn fmg-icon', type: 'button', onclick: () => { this.seed = randomSeed(); seedInput.value = String(this.seed); seedInput.classList.remove('fmg-invalid'); } }, glyph('shuffle'));
+      const shuffle = el('button', { class: 'fmg-btn fmg-icon', type: 'button', onclick: () => { this.seed = randomSeed(); seedInput.value = String(this.seed); seedInput.classList.remove('fmg-invalid'); this.seedChanged(); } }, glyph('shuffle'));
       this.tip(shuffle, () => this.t('gui-map-generator', 'randomize-map-seed'));
       const preset = md.presets.find((p) => p.name === this.presetName);
 
@@ -397,8 +397,8 @@
 
     renderPreview() {
       const G = (k) => this.t('gui-map-generator', k);
-      // Auto-refresh starts off, as in the game.
-      const st = this.previewState || (this.previewState = { auto: false });
+      // Auto-refresh starts on (the game starts it off).
+      const st = this.previewState || (this.previewState = { auto: true });
       const planets = this.modsetData.planets;
       if (!this.previewCanvas) {
         const c = el('canvas', { class: 'fmg-preview-canvas', width: PREVIEW_SIZE, height: PREVIEW_SIZE });
@@ -452,6 +452,11 @@
           frame.scrollTop = (frame.scrollHeight - frame.clientHeight) / 2;
         }
       });
+    }
+
+    // The seed box doesn't re-render the window, so tell the preview itself.
+    seedChanged() {
+      if (this.previewOpen) this.schedulePreview();
     }
 
     schedulePreview() {
