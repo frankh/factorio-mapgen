@@ -211,15 +211,23 @@
       if (v[0] !== tv[0] || v[1] !== tv[1]) {
         throw new Error('This map exchange string is from Factorio ' + (d.imported_from || v).slice(0, 3).join('.') + '; these settings are for ' + this.data.version + '.');
       }
-      // A Space Age string has the Space Age planets' controls.
+      // A Space Age string has the Space Age planets' controls. A 1.1 string
+      // has neither planet's, so it keeps the current mods, as in the game.
       const hasSA = Object.keys(d.map_gen_settings.autoplace_controls).some((c) => c === 'vulcanus_coal' || c === 'scrap');
-      if (this.opts.followImportModset !== false && hasSA !== (this.modset === 'space-age') && this.data.modsets[hasSA ? 'space-age' : 'vanilla']) {
+      if (!d.imported_from && this.opts.followImportModset !== false && hasSA !== (this.modset === 'space-age') && this.data.modsets[hasSA ? 'space-age' : 'vanilla']) {
         this.modset = hasSA ? 'space-age' : 'vanilla';
         this.template = MX.decode(this.modsetData.default_exchange_string);
         if (this.opts.onModsetChange) this.opts.onModsetChange(this.modset);
       }
       this.seed = d.map_gen_settings.seed;
       const mgs = clone(d.map_gen_settings);
+      // The game fills in the controls a 1.1 string doesn't know about
+      // (cliffs, rocks, the Space Age planets' resources) at their defaults.
+      if (d.imported_from) {
+        for (const k of Object.keys(this.template.map_gen_settings.autoplace_controls)) {
+          if (!mgs.autoplace_controls[k]) mgs.autoplace_controls[k] = { frequency: 1, size: 1, richness: 1 };
+        }
+      }
       // 1.1 map types 2.0 doesn't have (0.16 terrain, starting plateau) are
       // kept by the parser, but the game ignores them when it creates the
       // map and uses the default (Nauvis) elevation, so show that.
