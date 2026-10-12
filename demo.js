@@ -40,6 +40,8 @@ const gen = FactorioMapGen.mount(app, {
     box.focus(); box.select();
   },
 });
-fit(gen);
+// The demo opens with the preview showing.
+gen.previewOpen = true;
+gen.render();
 window.addEventListener('resize', () => fit(gen));
 window.gen = gen;
