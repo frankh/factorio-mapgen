@@ -399,7 +399,7 @@
     // Rendered in the browser, as the game does: Web Workers run the game's
     // own noise expressions (noise.js, preview.js) a chunk at a time,
     // nearest the middle first, terrain before entities. Ungenerated chunks
-    // stay black. The picture is 1 pixel per tile and can be dragged.
+    // stay black. The picture is one tile per screen pixel and can be dragged.
 
     previewKey() {
       return JSON.stringify([this.modset, this.previewPlanet || 'nauvis', this.result().mapGenSettings]);
@@ -424,35 +424,60 @@
         onChange: (v) => { this.previewPlanet = v; this.loadPreview(true); },
       });
       const frame = el('div', { class: 'fmg-preview-frame' }, this.previewCanvas, status);
-      // After the host has set the window's zoom, and before the first scroll.
-      requestAnimationFrame(() => this.sizePreviewCanvas());
-      if (!this.onPreviewResize) {
-        this.onPreviewResize = () => {
-          if (!this.root.isConnected) window.removeEventListener('resize', this.onPreviewResize);
-          else requestAnimationFrame(() => this.sizePreviewCanvas());
-        };
-        window.addEventListener('resize', this.onPreviewResize);
-      }
       this.dragToScroll(frame);
+      // After the host has set the window's zoom.
+      requestAnimationFrame(() => this.sizePreviewCanvas(true));
+      this.watchPixelRatio();
       return el('div', { class: 'fmg-deep fmg-preview' },
         el('div', { class: 'fmg-subheader' }, el('div', { class: 'fmg-spacer' }), auto, planet, refresh),
         frame);
     }
 
-    sizePreviewCanvas() {
+    // One tile per device pixel. The view is kept as the map point at its
+    // middle (a fraction of the map), so it survives size changes.
+    sizePreviewCanvas(place) {
       const c = this.previewCanvas;
       if (!c) return;
       const z = parseFloat(this.root.style.zoom) || 1;
-      const css = PREVIEW_SIZE / ((window.devicePixelRatio || 1) * z) + 'px';
-      if (c.style.width === css) return;
-      const frame = c.parentNode;
-      // Keep the same spot in the middle of the view.
-      const keep = frame && c.offsetWidth ? [(frame.scrollLeft + frame.clientWidth / 2) / c.offsetWidth, (frame.scrollTop + frame.clientHeight / 2) / c.offsetHeight] : null;
-      c.style.width = c.style.height = css;
-      if (keep && frame.isConnected) {
-        frame.scrollLeft = keep[0] * c.offsetWidth - frame.clientWidth / 2;
-        frame.scrollTop = keep[1] * c.offsetHeight - frame.clientHeight / 2;
+      const size = PREVIEW_SIZE / ((window.devicePixelRatio || 1) * z);
+      const centre = this.previewCentre || [0.5, 0.5];
+      if (Math.abs(size - (this.previewCssSize || 0)) > 0.01) {
+        this.previewCssSize = size;
+        c.style.width = c.style.height = size + 'px';
+        place = true;
       }
+      const frame = c.parentNode;
+      if (!place || !frame || !frame.isConnected) return;
+      frame.scrollLeft = centre[0] * c.offsetWidth - frame.clientWidth / 2;
+      frame.scrollTop = centre[1] * c.offsetHeight - frame.clientHeight / 2;
+      this.previewCentre = centre;
+    }
+
+    // Resizing, browser zoom and moving to a screen with another scale all
+    // change the device pixel ratio; not all of them fire a resize.
+    watchPixelRatio() {
+      if (this.previewWatch) return;
+      const resize = () => requestAnimationFrame(() => this.sizePreviewCanvas());
+      let mq = null;
+      const listen = () => {
+        if (mq) mq.removeEventListener('change', onRatio);
+        mq = window.matchMedia ? window.matchMedia('(resolution: ' + (window.devicePixelRatio || 1) + 'dppx)') : null;
+        if (mq) mq.addEventListener('change', onRatio);
+      };
+      const onRatio = () => { listen(); resize(); };
+      listen();
+      window.addEventListener('resize', resize);
+      this.previewWatch = () => { window.removeEventListener('resize', resize); if (mq) mq.removeEventListener('change', onRatio); };
+    }
+
+    // For a host that removes the window: stop the preview and let go of it.
+    destroy() {
+      clearTimeout(this.previewTimer);
+      (this.previewWorkers || []).forEach((w) => w.terminate());
+      this.previewWorkers = null;
+      if (this.previewWatch) this.previewWatch();
+      this.previewWatch = null;
+      if (this.tooltip) this.tooltip.remove();
     }
 
     // Drag the map around, as in the game.
@@ -478,14 +503,12 @@
       };
       frame.addEventListener('pointerup', end);
       frame.addEventListener('pointercancel', end);
-      frame.addEventListener('scroll', () => { this.previewScroll = [frame.scrollLeft, frame.scrollTop]; });
-      // Keep the position across re-renders; start in the middle (the spawn).
-      requestAnimationFrame(() => {
-        if (this.previewScroll) [frame.scrollLeft, frame.scrollTop] = this.previewScroll;
-        else {
-          frame.scrollLeft = (frame.scrollWidth - frame.clientWidth) / 2;
-          frame.scrollTop = (frame.scrollHeight - frame.clientHeight) / 2;
-        }
+      // Remember the map point in the middle of the view; it starts at the
+      // spawn and is put back after re-renders by sizePreviewCanvas.
+      frame.addEventListener('scroll', () => {
+        const c = this.previewCanvas;
+        if (!frame.isConnected || !c.offsetWidth) return;
+        this.previewCentre = [(frame.scrollLeft + frame.clientWidth / 2) / c.offsetWidth, (frame.scrollTop + frame.clientHeight / 2) / c.offsetHeight];
       });
     }
 
