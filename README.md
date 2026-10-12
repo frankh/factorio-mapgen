@@ -57,10 +57,13 @@ The conversion also renames the `control-setting:*` climate properties to
 `control:*`, maps `0_17-island` to `elevation_island`, writes
 `elevation_lakes` when no map type was set, turns a frequency of 0 into size
 0, and resets cliff continuity to 1 (even 0, which turned cliffs off in 1.1).
-Other 1.1 map types are kept, but 2.0 ignores them when it creates the map, so
-the page shows those as Normal. This was checked on 60 fuzzed 1.1.110 strings
-parsed by 2.0.77 (`game_parse_1_1` in the fixtures); passing the converted
-settings to a 2.0.77 `--create` gives back exactly the string the page exports.
+Other 1.1 map types (`0_16-elevation`, `0_17-starting-plateau`) are kept by
+the parser, but 2.0.77 warns that the expression isn't defined and ignores it
+when it creates the map, so the page imports those with the default Nauvis
+elevation. This was checked on 60 fuzzed 1.1.110 strings parsed by 2.0.77
+(`game_parse_1_1` in the fixtures). Separately, a 2.0.77 `--create` with the
+converted settings of 14 of them (all with known map types and settings 2.0
+can compile) reported the same string as `encode(decode(s))`.
 
 ## How it was checked
 

@@ -209,7 +209,7 @@
       const d = MX.decode(str);
       const v = d._raw.version, tv = this.template._raw.version;
       if (v[0] !== tv[0] || v[1] !== tv[1]) {
-        throw new Error('This map exchange string is from Factorio ' + v.slice(0, 3).join('.') + '; these settings are for ' + this.data.version + '.');
+        throw new Error('This map exchange string is from Factorio ' + (d.imported_from || v).slice(0, 3).join('.') + '; these settings are for ' + this.data.version + '.');
       }
       // A Space Age string has the Space Age planets' controls.
       const hasSA = Object.keys(d.map_gen_settings.autoplace_controls).some((c) => c === 'vulcanus_coal' || c === 'scrap');
@@ -220,11 +220,11 @@
       }
       this.seed = d.map_gen_settings.seed;
       const mgs = clone(d.map_gen_settings);
-      // 1.1 map types this version doesn't have (0.16 terrain, starting
-      // plateau) are kept by the parser, but the game ignores them and makes
-      // a Normal map, so show that.
+      // 1.1 map types 2.0 doesn't have (0.16 terrain, starting plateau) are
+      // kept by the parser, but the game ignores them when it creates the
+      // map and uses the default (Nauvis) elevation, so show that.
       const pen = mgs.property_expression_names || {};
-      if (pen.elevation && !this.modsetData.elevation.some((x) => x.name === pen.elevation)) delete pen.elevation;
+      if (d.imported_from && pen.elevation && !this.modsetData.elevation.some((x) => x.name === pen.elevation)) delete pen.elevation;
       // Keep the imported string's own raw bytes (version etc.) out; we export
       // with this game version, as the game does.
       this.settings = { mgs, ms: clone(d.map_settings) };
