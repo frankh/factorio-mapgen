@@ -120,7 +120,11 @@ Rendering a 512x512 view on one core takes 0.2 to 0.5 seconds depending on
 the planet (Aquilo quickest, Nauvis slowest). The page spreads chunks over
 up to six workers, each taking an equal wedge around the middle so that most
 of a chunk's neighbours (whose tiles its entities' collision checks need)
-are its own. The evaluator runs each node over a whole chunk at once.
+are its own; in Chromium with three workers the page's 1024x1024 preview
+takes 0.5 to 1.1 seconds. Workers yield between chunks (so a new preview can
+stop the last) with a message to themselves: a chain of setTimeouts is held
+to 4 ms a step, more than a chunk takes. The evaluator runs each node over a
+whole chunk at once.
 
 Pass 0 evaluates tile and entity probabilities as one program, since they
 share most of their noise, and makes the chunk's entity draws there. Pass 1

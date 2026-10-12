@@ -11,6 +11,18 @@ importScripts('noise.js?v=9', 'noisedata.js?v=7', 'preview.js?v=9');
 
 let current = 0;
 
+// Yields between chunks so a 'stop' gets through. setTimeout won't do: a
+// chain of them is held to 4 ms apiece, longer than most chunks take. A
+// message to ourselves comes straight back. One at a time: a new job's step
+// takes the place of the last job's.
+const tick = new MessageChannel();
+let next = null, posted = false;
+tick.port1.onmessage = () => { posted = false; const f = next; next = null; if (f) f(); };
+const later = (f) => {
+  next = f;
+  if (!posted) { posted = true; tick.port2.postMessage(0); }
+};
+
 self.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'stop') { if (m.job === current) current = 0; return; }
@@ -46,7 +58,7 @@ self.onmessage = (e) => {
       return;
     }
     if (++i >= m.chunks.length) { i = 0; pass++; }
-    setTimeout(step, 0);
+    later(step);
   };
   step();
 };
