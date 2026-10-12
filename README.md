@@ -116,27 +116,41 @@ noise is off in its last bits.
 
 ### Speed
 
-Rendering a 512x512 view on one core takes 0.6 to 1.7 seconds depending on
-the planet (Aquilo quickest, Fulgora slowest); the page spreads chunks over
-up to six workers. The evaluator runs each node over a whole chunk at once.
+Rendering a 512x512 view on one core takes 0.2 to 0.5 seconds depending on
+the planet (Aquilo quickest, Nauvis slowest). The page spreads chunks over
+up to six workers, each taking an equal wedge around the middle so that most
+of a chunk's neighbours (whose tiles its entities' collision checks need)
+are its own. The evaluator runs each node over a whole chunk at once.
 
-Basis noise, which every octave noise is made of, and the element-wise
-operators run in WebAssembly with SIMD, four points at a time
-(`wasm/noise.c`, embedded in `noise.js` by `wasm/build.sh`), on buffers kept
-in the module's memory. Each program runs to a plan per number of points:
-every node's buffer fixed in advance, and each run of element-wise nodes one
-call into the module. The kernels do the game's single-precision arithmetic
-in the game's order, so they give the same bits as the JS loops beside them,
-which browsers without WebAssembly SIMD (or pages without
-`'wasm-unsafe-eval'` in their CSP) use instead, several times slower. The
+Pass 0 evaluates tile and entity probabilities as one program, since they
+share most of their noise, and makes the chunk's entity draws there. Pass 1
+then only checks each draw's box against the tiles around it, which draws
+nothing from the random stream, and draws. Cliff lattices are evaluated for
+many chunks at a time.
+
+In WebAssembly with SIMD (`wasm/noise.c`, embedded in `noise.js` by
+`wasm/build.sh`), on buffers kept in the module's memory:
+
+- basis noise, which every octave noise is made of. On a chunk, x is the
+  same down each column and y along each row, so whatever depends on one of
+  them alone is worked out once a column or row;
+- the element-wise operators. Each program runs to a plan per number of
+  points: every node's buffer fixed in advance, and each run of element-wise
+  nodes one call into the module;
+- Voronoi noise, spot noise's cones, and the per-chunk tile choice and
+  entity draws.
+
+They do the same arithmetic as the JS beside them (the game's single
+precision, in the game's order, where it is known), so they give the same
+bits. Browsers without WebAssembly SIMD, or pages without
+`'wasm-unsafe-eval'` in their CSP, use the JS, several times slower. The
 site's CSP still rules out `new Function`.
 
 Voronoi noise bins points by quarter cell. Each bin searches only the cells
 that can hold the nearest or second nearest point for something in it, and
 pyramids measure only the bisectors that can be nearest somewhere in the
 bin, so the results are those of searching them all. Nodes that ask for the
-same search share it. Pass 1 takes the tiles under and around a chunk from
-pass 0 and only works out those beyond the rendered area.
+same search share it. Spot noise looks only at the spots near the points.
 
 ### How the game does it
 

@@ -459,7 +459,7 @@
     workers() {
       if (this.previewWorkers) return this.previewWorkers;
       const n = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
-      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=8';
+      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=9';
       this.previewWorkers = [];
       for (let i = 0; i < n; i++) {
         const w = new Worker(url);
@@ -481,16 +481,21 @@
       ctx.fillRect(0, 0, PREVIEW_SIZE, PREVIEW_SIZE);
       let workers;
       try { workers = this.workers(); } catch (e) { st.error = String(e.message || e); this.updatePreviewView(); return; }
-      // Chunks nearest the middle first, dealt round-robin so every worker
-      // works outwards together.
+      // Chunks nearest the middle first. Each worker takes an equal wedge
+      // around the middle, so all of them work outwards together and most
+      // of a chunk's neighbours, whose tiles its entities need, are its own
+      // worker's.
       const half = PREVIEW_SIZE / 32 / 2, all = [];
       for (let cy = -half; cy < half; cy++) for (let cx = -half; cx < half; cx++) all.push([cx, cy]);
       const ring = (c) => Math.max(Math.abs(c[0] + 0.5), Math.abs(c[1] + 0.5));
-      all.sort((a, b) => ring(a) - ring(b) || Math.atan2(a[1] + 0.5, a[0] + 0.5) - Math.atan2(b[1] + 0.5, b[0] + 0.5));
+      const angle = (c) => Math.atan2(c[1] + 0.5, c[0] + 0.5);
+      all.sort((a, b) => ring(a) - ring(b) || angle(a) - angle(b));
+      const owner = new Map();
+      all.slice().sort((a, b) => angle(a) - angle(b)).forEach((c, i) => owner.set(c, Math.floor(i * workers.length / all.length)));
       const mgs = this.result().mapGenSettings;
       workers.forEach((w, i) => w.postMessage({
         type: 'start', job, modset: this.modset, planet: this.previewPlanet || 'nauvis', mgs, scale: 1,
-        chunks: all.filter((_, k) => k % workers.length === i),
+        chunks: all.filter((c) => owner.get(c) === i),
       }));
       this.updatePreviewView();
     }

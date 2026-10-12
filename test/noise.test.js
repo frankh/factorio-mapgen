@@ -38,16 +38,23 @@ test('grid path: WebAssembly matches JS', { skip: !N.wasm() }, () => {
     'multioctave_noise{x = x, y = y, seed0 = 1, seed1 = 2, octaves = 5, persistence = 0.6, input_scale = 1/50, output_scale = 1.7}',
     'quick_multioctave_noise{x = x, y = y, seed0 = 5, seed1 = 9, input_scale = 1/20, output_scale = 1, octaves = 3, octave_output_scale_multiplier = 0.5, octave_input_scale_multiplier = 2, octave_seed0_shift = 1, offset_x = 3.5}',
     'variable_persistence_multioctave_noise{x = x, y = y, seed0 = 5, seed1 = 9, input_scale = 1/20, output_scale = 1, octaves = 4, persistence = 0.6, offset_x = 1.25}',
+    // Not the plain positions (so point by point), but still in rows.
+    'basis_noise{x = x * 0.75 + 10, y = y - 3, seed0 = 12345, seed1 = 678, input_scale = 0.37, output_scale = 1.7}',
+    'multioctave_noise{x = x / 3, y = y * 2, seed0 = 1, seed1 = 2, octaves = 5, persistence = 0.6, input_scale = 1/50, output_scale = 1.7}',
+    'basis_noise{x = x + y, y = y, seed0 = 12345, seed1 = 678, input_scale = 0.37, output_scale = 1.7}',
   ];
   const xs = new Float32Array(1024), ys = new Float32Array(1024);
   for (let i = 0; i < 1024; i++) { xs[i] = -96 + (i % 32); ys[i] = 64 + (i >> 5); }
   for (const src of srcs) {
     const prog = N.compile(D.modsets.vanilla, { seed: 1 }, [{ src }]);
-    const w = prog.run(xs, ys, { x0: -96, y0: 64 })[0].slice();
     N.wasm(false);
-    const j = prog.run(xs, ys, { x0: -96, y0: 64 })[0];
+    const j = prog.run(xs, ys, { x0: -96, y0: 64 })[0].slice();
     N.wasm(true);
-    j.forEach((v, i) => assert.ok(Object.is(v, w[i]), `${src}: WebAssembly ${w[i]}, JS ${v} at ${i}`));
+    // Point by point, and row by row.
+    for (const grid of [{ x0: -96, y0: 64 }, { x0: -96, y0: 64, w: 32 }]) {
+      const w = prog.run(xs, ys, grid)[0];
+      j.forEach((v, i) => assert.ok(Object.is(v, w[i]), `${src} (w ${grid.w}): WebAssembly ${w[i]}, JS ${v} at ${i}`));
+    }
   }
 });
 
@@ -85,4 +92,51 @@ test('programs reuse their buffers', { skip: !N.wasm() }, () => {
   const used = N.heapUsed();
   for (let k = 0; k < 20; k++) for (const n of sizes.concat(sizes.map((n) => n - 100))) prog.run(xs.subarray(0, n), ys.subarray(0, n));
   assert.strictEqual(N.heapUsed(), used);
+});
+
+// Spot noise on a chunk's rows (cones drawn by the module) gives the JS's
+// bits too.
+test('spot rows: WebAssembly matches JS', { skip: !N.wasm() }, () => {
+  // As the fixture, and with x bent so the points aren't in rows.
+  const srcs = [fx.cases.spot.expression, fx.cases.spot.expression.replace('{x=x,', '{x=x+y/7,')];
+  const prog = N.compile(D.modsets.vanilla, { seed: fx.seed }, srcs.map((src) => ({ src })));
+  for (const [cx, cy] of [[0, 0], [-9, 4], [12, -15]]) {
+    const xs = Float32Array.from({ length: 1024 }, (_, i) => cx * 32 + (i % 32));
+    const ys = Float32Array.from({ length: 1024 }, (_, i) => cy * 32 + (i >> 5));
+    const grid = { x0: cx * 32, y0: cy * 32, w: 32 };
+    const w = prog.run(xs, ys, grid).map((a) => a.slice());
+    N.wasm(false);
+    const j = prog.run(xs, ys, grid);
+    N.wasm(true);
+    srcs.forEach((src, k) => j[k].forEach((v, i) => assert.ok(Object.is(v, w[k][i]),
+      `${src} at (${xs[i]}, ${ys[i]}): WebAssembly ${w[k][i]}, JS ${v}`)));
+  }
+});
+
+// Voronoi noise in WebAssembly (search and pyramids) gives the JS's bits.
+test('voronoi: WebAssembly matches JS', { skip: !N.wasm() }, () => {
+  const srcs = [];
+  for (const mode of ['cell_id', 'spot_noise', 'facet_noise', 'pyramid_noise']) {
+    for (const type of ['euclidean', 'manhattan', 'chebyshev', 'minkowski3']) {
+      if (mode === 'pyramid_noise' && type === 'minkowski3') continue;
+      for (const [grid, jitter] of [[7, 1], [21, 0.8], [58, 0.6]]) {
+        srcs.push(`voronoi_${mode}{x = x, y = y, seed0 = 11, seed1 = 3, grid_size = ${grid}, distance_type = "${type}", jitter = ${jitter}}`);
+      }
+    }
+  }
+  const prog = N.compile(D.modsets.vanilla, { seed: 1 }, srcs.map((src) => ({ src })));
+  // Chunks, and points too spread out to bin.
+  const batches = [[0, 0], [-3, 2], [5, -7]].map(([cx, cy]) => [
+    Float32Array.from({ length: 1024 }, (_, i) => cx * 32 + (i % 32)),
+    Float32Array.from({ length: 1024 }, (_, i) => cy * 32 + (i >> 5))]);
+  batches.push([Float32Array.from({ length: 300 }, (_, i) => (i * 97) % 1500 - 700),
+    Float32Array.from({ length: 300 }, (_, i) => (i * 61) % 1300 - 600)]);
+  for (const [xs, ys] of batches) {
+    const w = prog.run(xs, ys).map((a) => a.slice());
+    N.wasm(false);
+    const j = prog.run(xs, ys);
+    N.wasm(true);
+    srcs.forEach((src, k) => j[k].forEach((v, i) => assert.ok(Object.is(v, w[k][i]),
+      `${src} at (${xs[i]}, ${ys[i]}): WebAssembly ${w[k][i]}, JS ${v}`)));
+  }
 });

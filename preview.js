@@ -91,19 +91,20 @@
       var o = pen[kind + ':' + name + ':' + what];
       return typeof o === 'string' ? { src: o } : o !== undefined ? { src: o } : { src: src, def: a };
     }
-    var tileProg = N.compile(data, ps.mgs, tiles.map(function (t) {
+    var tileOuts = tiles.map(function (t) {
       var a = data.tile[t].autoplace;
       return prop('tile', t, 'probability', a, a.probability_expression);
-    }));
+    });
     var colors = tiles.map(function (t) { return data.tile[t].color; });
 
     var ents = previewEntities(data, ps).filter(function (e) {
       return controlSize(ps.mgs, e.def.autoplace.control) > 0;
     });
     var tileSets = tiles.map(function (t) { return new Set(data.tile[t].layers || []); });
-    var outs = [];
-    ents.forEach(function (e) {
+    var outs = [], patterns = new Map();
+    ents.forEach(function (e, i) {
       var a = e.def.autoplace;
+      e.index = i;
       e.p = outs.length; outs.push(prop('entity', e.name, 'probability', a, a.probability_expression));
       e.r = outs.length; outs.push(prop('entity', e.name, 'richness', a, a.richness_expression === undefined ? 0 : a.richness_expression));
       e.density = a.placement_density || 1;
@@ -121,6 +122,11 @@
         if (allowed && !allowed.has(t)) return 1;
         return layers.some(function (l) { return tileSets[i].has(l); }) ? 1 : 0;
       });
+      // Entities blocked by the same tiles share a pattern.
+      var pk = e.blockedBy.join('');
+      if (!patterns.has(pk)) patterns.set(pk, patterns.size);
+      e.pattern = patterns.get(pk);
+      e.landing = e.kind === 'resource' ? 1 : e.offgrid ? 2 : 0;
       e.color = e.kind === 'tree' ? null : e.kind === 'enemy' ? null : e.def.color;
     });
     // Groups of equal autoplace order, in order.
@@ -130,11 +136,52 @@
       if (last && (last[0].def.autoplace.order || '') === (e.def.autoplace.order || '')) last.push(e);
       else groups.push([e]);
     });
-    var entProg = outs.length ? N.compile(data, ps.mgs, outs) : null;
+    // Pass 0 works out tiles and entity probabilities together (they share
+    // much of their noise); entity outputs come after the tiles'. Tiles
+    // alone (for those around the chunks done) are the same program's first
+    // outputs.
+    var chunkProg = N.compile(data, ps.mgs, tileOuts.concat(outs));
+    var tileProg = outs.length ? new N.Program(chunkProg.builder, chunkProg.outputs.slice(0, tiles.length)) : chunkProg;
+    var entities0 = outs.length ? tiles.length : -1;
     var cliffs = cliffPlacer(data, planet, ps);
     var tree = (data.chart && data.chart.tree) || [48, 99, 48, 102];
     var enemy = (data.chart && data.chart.enemy) || [255, 25, 25, 255];
     ents.forEach(function (e) { if (e.kind === 'tree') e.color = tree; else if (e.kind === 'enemy') e.color = enemy; });
+    // At most this many draws a chunk: each tile one entity a group, with
+    // its placement density's draws.
+    var maxDraws = groups.reduce(function (s, g) {
+      return s + CHUNK * CHUNK * Math.max.apply(null, g.map(function (e) { return Math.ceil(e.density); }));
+    }, 0);
+
+    // The module's versions of the per-chunk loops below (noise.c's
+    // chunk_tiles and chunk_draws), with their memory: set up again after
+    // each resetHeap, null without the module (or memory).
+    var K = null;
+    function kernels() {
+      var M = N.module();
+      if (!M) return null;
+      if (K && K.epoch === M.epoch()) return K;
+      K = null;
+      var n = CHUNK * CHUNK, nt = Math.max(1, tiles.length), np = Math.max(1, patterns.size);
+      var size = { outs: tiles.length * 4, ids: n * 4, best: n * 4, colours: nt * 4, px: n * 4, tables: np * nt,
+        mask: np * n * 4, groups: (groups.length + 6 * ents.length) * 4, bp: n * 4, br: n * 4, be: n * 4, draws: maxDraws * 12 };
+      var at = {};
+      for (var k in size) if (!(at[k] = M.alloc(size[k]))) return null;
+      var made = {
+        M: M, epoch: M.epoch(), at: at,
+        outs: new Int32Array(M.buf, at.outs, tiles.length), ids: new Int32Array(M.buf, at.ids, n),
+        px: new Uint8ClampedArray(M.buf, at.px, n * 4), groups: new Int32Array(M.buf, at.groups, size.groups / 4),
+        draws: new Int32Array(M.buf, at.draws, maxDraws * 3),
+      };
+      var col = new Uint8Array(M.buf, at.colours, nt * 4), tab = new Uint8Array(M.buf, at.tables, np * nt);
+      colors.forEach(function (c, t) { col.set([c[0], c[1], c[2], 255], t * 4); });
+      ents.forEach(function (e) { tab.set(e.blockedBy, e.pattern * nt); });
+      return (K = made);
+    }
+    function inModule(k, r, from, to) {
+      for (var i = from; i < to; i++) if (r[i].buffer !== k.M.buf) return false;
+      return true;
+    }
 
     function positions(cx, cy) {
       var n = CHUNK * CHUNK, xs = new Float32Array(n), ys = new Float32Array(n);
@@ -146,10 +193,11 @@
     }
 
     // Each chunk's tiles from pass 0, kept for pass 1's collision checks
-    // there and in the chunks around it.
-    var chunkTiles = new Map();
-    // The game evaluates a chunk as a grid, which its noise has a path for.
-    function chunkGrid(cx, cy) { return scale === 1 ? { x0: cx * CHUNK, y0: cy * CHUNK } : null; }
+    // there and in the chunks around it; and its entity draws (see place).
+    var chunkTiles = new Map(), chunkDraws = new Map();
+    // The game evaluates a chunk as a grid, which its noise has a path for
+    // (positions() lays it out in rows).
+    function chunkGrid(cx, cy) { return scale === 1 ? { x0: cx * CHUNK, y0: cy * CHUNK, w: CHUNK } : null; }
     // Points from several chunks: each with its own chunk's corner.
     function pointsGrid(xs, ys) {
       if (scale !== 1) return null;
@@ -159,19 +207,33 @@
     }
 
     function terrain(cx, cy) {
-      var p = positions(cx, cy), n = CHUNK * CHUNK;
-      var r = tileProg.run(p[0], p[1], chunkGrid(cx, cy));
-      var px = new Uint8ClampedArray(n * 4), ids = new Int16Array(n).fill(-1), best = new Float32Array(n).fill(-Infinity), k;
-      // The highest probability (the first of equals) at each tile.
-      for (var t = 0; t < r.length; t++) {
-        var rt = r[t];
-        for (k = 0; k < n; k++) if (rt[k] > best[k]) { best[k] = rt[k]; ids[k] = t; }
+      var p = positions(cx, cy), n = CHUNK * CHUNK, key = cx + ',' + cy;
+      var r = chunkProg.run(p[0], p[1], chunkGrid(cx, cy)), K = kernels(), px, ids;
+      if (K && inModule(K, r, 0, tiles.length)) {
+        for (var t = 0; t < tiles.length; t++) K.outs[t] = r[t].byteOffset;
+        K.M.ex.chunk_tiles(n, tiles.length, K.at.outs, K.at.ids, K.at.best, K.at.colours, K.at.px);
+        px = K.px.slice(); ids = new Int16Array(K.ids);
+      } else {
+        px = new Uint8ClampedArray(n * 4); ids = new Int16Array(n).fill(-1);
+        var best = new Float32Array(n).fill(-Infinity), k;
+        // The highest probability (the first of equals) at each tile.
+        for (t = 0; t < tiles.length; t++) {
+          var rt = r[t];
+          for (k = 0; k < n; k++) if (rt[k] > best[k]) { best[k] = rt[k]; ids[k] = t; }
+        }
+        for (k = 0; k < n; k++) {
+          var c = ids[k] >= 0 ? colors[ids[k]] : BLACK;
+          px[k * 4] = c[0]; px[k * 4 + 1] = c[1]; px[k * 4 + 2] = c[2]; px[k * 4 + 3] = 255;
+        }
       }
-      for (k = 0; k < n; k++) {
-        var c = ids[k] >= 0 ? colors[ids[k]] : BLACK;
-        px[k * 4] = c[0]; px[k * 4 + 1] = c[1]; px[k * 4 + 2] = c[2]; px[k * 4 + 3] = 255;
+      if (entities0 >= 0 || cliffs) {
+        // For collision checks a tile with no autoplace counts as the first.
+        var kept = new Int16Array(n);
+        for (k = 0; k < n; k++) kept[k] = ids[k] < 0 ? 0 : ids[k];
+        chunkTiles.set(key, kept);
       }
-      if (entProg || cliffs) chunkTiles.set(cx + ',' + cy, ids);
+      if (cliffs) cliffs.note(cx, cy);
+      if (entities0 >= 0) chunkDraws.set(key, place(cx, cy, r, ids));
       return px;
     }
 
@@ -194,8 +256,11 @@
       px[o + 2] = (px[o + 2] * v + c[2] * w) >> 8;
     }
 
-    // The chunk's entities, in placement order, as [entity, x, y]: the map
-    // generator's own list (EntityMapGenerationTask::generateEntities).
+    // The chunk's entity draws, in placement order, as (entity index, x, y)
+    // triples (x and y in 1/256 tiles): the map generator's own list
+    // (EntityMapGenerationTask::generateEntities) before its collision
+    // checks against the tiles under each one's box, which need the chunks
+    // around and wait for pass 1 (they draw nothing from the stream).
     //
     // Entities go in groups of equal autoplace order. Within a group each
     // tile takes the entity with the highest probability there (richness
@@ -205,21 +270,36 @@
     // a draw under the probability places the entity: ore at the tile centre
     // if its richness is positive, off-grid entities at a random 1/16 tile
     // offset (two more draws), others at the tile centre, as long as no tile
-    // under its map_generator_bounding_box blocks it.
-    function place(cx, cy, tl) {
-      var p = positions(cx, cy), n = CHUNK * CHUNK;
-      var r = entProg.run(p[0], p[1], chunkGrid(cx, cy));
-      var seed = (Math.imul(cx, 7919) + Math.imul(cy, 7907) + 0x3fbe2c) >>> 0;
-      var rng = new N.Taus88(seed < 342 ? 341 : seed);
+    // under its map_generator_bounding_box blocks it. r: chunkProg's
+    // outputs; ids: the chunk's tiles.
+    function place(cx, cy, r, ids) {
+      var n = CHUNK * CHUNK, seed = (Math.imul(cx, 7919) + Math.imul(cy, 7907) + 0x3fbe2c) >>> 0;
+      seed = seed < 342 ? 341 : seed;
+      var K = kernels();
+      if (K && inModule(K, r, entities0, r.length)) {
+        var d = K.groups, at = 0;
+        groups.forEach(function (grp) {
+          d[at++] = grp.length;
+          grp.forEach(function (e) {
+            d[at++] = e.index; d[at++] = r[entities0 + e.p].byteOffset; d[at++] = r[entities0 + e.r].byteOffset;
+            d[at++] = e.pattern; d[at++] = Math.ceil(e.density); d[at++] = e.landing;
+          });
+        });
+        K.ids.set(ids);
+        var a = K.at, cnt = K.M.ex.chunk_draws(n, CHUNK, cx * CHUNK, cy * CHUNK, seed, a.ids, Math.max(1, tiles.length),
+          Math.max(1, patterns.size), a.tables, a.mask, groups.length, a.groups, a.bp, a.br, a.be, a.draws);
+        return K.draws.slice(0, 3 * cnt);
+      }
+      var rng = new N.Taus88(seed);
       var placed = [];
-      var bp = new Float32Array(n), br = new Float32Array(n), be = new Int32Array(n), inner = tl.inner;
+      var bp = new Float32Array(n), br = new Float32Array(n), be = new Int32Array(n);
       for (var g = 0; g < groups.length; g++) {
         var grp = groups[g];
         bp.fill(-Infinity); be.fill(-1);
         for (var q = 0; q < grp.length; q++) {
-          var e = grp[q], pr = r[e.p], rr = r[e.r], blk = e.blockedBy;
+          var e = grp[q], pr = r[entities0 + e.p], rr = r[entities0 + e.r], blk = e.blockedBy;
           for (var k = n - 1; k >= 0; k--) {
-            if (blk[inner[k]]) continue;
+            if (blk[ids[k] < 0 ? 0 : ids[k]]) continue;
             var v = pr[k];
             if (v > bp[k] || (v === bp[k] && rr[k] > br[k])) { bp[k] = v; br[k] = rr[k]; be[k] = q; }
           }
@@ -238,24 +318,40 @@
               fx = (fx + Math.trunc(rng.next() * 2.3283064365386963e-10 * 256)) & ~15;
               fy = (fy + Math.trunc(rng.next() * 2.3283064365386963e-10 * 256)) & ~15;
             } else { fx += 128; fy += 128; }
-            if (tl.boxBlocked(e, fx, fy)) continue;
-            placed.push([e, fx / 256, fy / 256]);
+            placed.push(e.index, fx, fy);
           }
         }
       }
-      return placed;
+      return Int32Array.from(placed);
+    }
+
+    // The chunk's entities as [entity, x, y]: its draws (from pass 0, or
+    // worked out now) that no tile under the box blocks.
+    function placedAt(cx, cy, tl) {
+      var key = cx + ',' + cy, draws = chunkDraws.get(key);
+      if (draws) chunkDraws.delete(key);
+      else {
+        var p = positions(cx, cy), r = chunkProg.run(p[0], p[1], chunkGrid(cx, cy));
+        draws = place(cx, cy, r, tl.inner);
+      }
+      var out = [];
+      for (var i = 0; i < draws.length; i += 3) {
+        var e = ents[draws[i]];
+        if (!tl.boxBlocked(e, draws[i + 1], draws[i + 2])) out.push([e, draws[i + 1] / 256, draws[i + 2] / 256]);
+      }
+      return out;
     }
 
     // Pass 1, as MapPreviewGenerator::Worker::computeEntities: cliffs, then
     // the chunk's entities over every pixel their collision box touches.
     function entities(cx, cy, px) {
       px = px.slice();
-      if (!entProg && !cliffs) return px;
+      if (entities0 < 0 && !cliffs) return px;
       var tl = tileLayers(cx, cy);
       // Cliffs go down first: everything else is drawn over them.
       if (cliffs) drawCliffs(px, cx, cy, cliffs.place(cx, cy, tl));
-      if (!entProg) return px;
-      var placed = place(cx, cy, tl);
+      if (entities0 < 0) return px;
+      var placed = placedAt(cx, cy, tl);
       var x0 = cx * CHUNK, y0 = cy * CHUNK;
       // Last placed first, as MapPreviewGenerator::Worker::computeEntities
       // draws them. Spawners and worms that would overlap one already drawn
@@ -331,12 +427,37 @@
         return 0;
       }
 
+      // Each chunk's lattice values, worked out for many chunks at once (a
+      // point's values don't depend on the others it goes with): those
+      // pass 0 has been through, up to BATCH at a time.
+      var w = nx + 1, hgt = ny + 1, m = w * hgt, BATCH = 48;
+      var pending = new Map(), lattice = new Map();
+      function latticeAt(cx, cy) {
+        var key = cx + ',' + cy, got = lattice.get(key);
+        if (got) { lattice.delete(key); return got; }
+        var batch = [[cx, cy]];
+        pending.delete(key);
+        var it = pending.values(), next;
+        while (batch.length < BATCH && !(next = it.next()).done) batch.push(next.value);
+        var xs = new Float32Array(m * batch.length), ys = new Float32Array(m * batch.length);
+        batch.forEach(function (c, b) {
+          for (var j = 0; j < hgt; j++) for (var i = 0; i < w; i++) {
+            xs[b * m + j * w + i] = c[0] * CHUNK + i * gx; ys[b * m + j * w + i] = c[1] * CHUNK + j * gy;
+          }
+        });
+        var r = prog.run(xs, ys);
+        batch.forEach(function (c, b) {
+          var k = c[0] + ',' + c[1], v = [r[0].slice(b * m, b * m + m), r[1].slice(b * m, b * m + m)];
+          if (b === 0) got = v; else { pending.delete(k); lattice.set(k, v); }
+        });
+        return got;
+      }
+
       return {
+        // Pass 0 has been through the chunk.
+        note: function (cx, cy) { pending.set(cx + ',' + cy, [cx, cy]); },
         place: function (cx, cy, tl) {
-          var w = nx + 1, hgt = ny + 1, m = w * hgt;
-          var xs = new Float32Array(m), ys = new Float32Array(m);
-          for (var j = 0; j < hgt; j++) for (var i = 0; i < w; i++) { xs[j * w + i] = cx * CHUNK + i * gx; ys[j * w + i] = cy * CHUNK + j * gy; }
-          var r = prog.run(xs, ys), el = r[0], cl = r[1];
+          var r = latticeAt(cx, cy), el = r[0], cl = r[1], i, j;
           if (smooth !== 0) el = smoothed(el, w, hgt, smooth);
           // h: edges along x (ny + 1 rows of nx); v: edges along y (ny rows of nx + 1).
           var h = new Uint8Array(nx * hgt), v = new Uint8Array(w * ny);
@@ -449,10 +570,10 @@
         var ncx = cx + dx, ncy = cy + dy, done = chunkTiles.get(ncx + ',' + ncy);
         var ia = Math.max(0, dx * CHUNK + B), ib = Math.min(W, (dx + 1) * CHUNK + B);
         var ja = Math.max(0, dy * CHUNK + B), jb = Math.min(W, (dy + 1) * CHUNK + B);
-        for (j = ja; j < jb; j++) for (i = ia; i < ib; i++) {
-          var tx = cx * CHUNK + i - B, ty = cy * CHUNK + j - B;
-          if (done) { var t = done[(ty - ncy * CHUNK) * CHUNK + tx - ncx * CHUNK]; id[j * W + i] = t < 0 ? 0 : t; }
-          else { xs.push(tx); ys.push(ty); at.push(j * W + i); }
+        for (j = ja; j < jb; j++) {
+          var ty = cy * CHUNK + j - B, from = (ty - ncy * CHUNK) * CHUNK + cx * CHUNK - B - ncx * CHUNK;
+          if (done) { id.set(done.subarray(from + ia, from + ib), j * W + ia); continue; }
+          for (i = ia; i < ib; i++) { xs.push(cx * CHUNK + i - B); ys.push(ty); at.push(j * W + i); }
         }
       }
       if (at.length) {
@@ -482,11 +603,11 @@
     }
 
     return {
-      passes: entProg || cliffs ? 2 : 1,
+      passes: entities0 >= 0 || cliffs ? 2 : 1,
       render: function (pass, cx, cy, prev) { return pass === 0 ? terrain(cx, cy) : entities(cx, cy, prev); },
       _cliffs: function (cx, cy) { return cliffs ? cliffs.place(cx, cy, tileLayers(cx, cy)) : []; },
       _tiles: function (cx, cy) { return tileLayers(cx, cy); },
-      _placed: function (cx, cy) { return entProg ? place(cx, cy, tileLayers(cx, cy)) : []; },
+      _placed: function (cx, cy) { return entities0 >= 0 ? placedAt(cx, cy, tileLayers(cx, cy)) : []; },
     };
   }
 
