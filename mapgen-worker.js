@@ -8,7 +8,7 @@
 // Messages in:  {type: 'config', job, modset, planet, mgs}: new settings
 //               {type: 'want', job, items: [[level, cx, cy], ...]}: the
 //                 chunks wanted, most wanted first; replaces the last list
-// Messages out: {type: 'chunk', job, level, pass, last, cx, cy, w, h, pixels (RGBA)}
+// Messages out: {type: 'chunk', job, level, pass, last, cx, cy, bitmap}
 //               {type: 'error', job, message}
 /* global importScripts, FactorioNoise, FactorioNoiseData, FactorioPreview */
 importScripts('noise.js?v=10', 'noisedata.js?v=7', 'preview.js?v=10');
@@ -61,8 +61,11 @@ function step() {
       if (terrain.size > KEEP) terrain.delete(terrain.keys().next().value);
     }
     r.trim(KEEP);
-    const copy = pixels.slice();
-    self.postMessage({ type: 'chunk', job, level: it.level, pass, last, cx: it.cx, cy: it.cy, w: FactorioPreview.CHUNK, h: FactorioPreview.CHUNK, pixels: copy }, [copy.buffer]);
+    // A bitmap is ready to draw: the page needn't make one of each chunk.
+    const n = FactorioPreview.CHUNK, data = new ImageData(new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, n * n * 4).slice(), n, n);
+    const msg = { type: 'chunk', job, level: it.level, pass, last, cx: it.cx, cy: it.cy };
+    createImageBitmap(data).then((bitmap) => { msg.bitmap = bitmap; self.postMessage(msg, [bitmap]); },
+      (err) => self.postMessage({ type: 'error', job, message: String(err && err.message || err) }));
   } catch (err) {
     wanted = [];
     self.postMessage({ type: 'error', job, message: String(err && err.message || err) });

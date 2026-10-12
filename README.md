@@ -10,9 +10,9 @@ Demo: https://frankh.github.io/factorio-mapgen/
 - Gives you the `map-gen-settings.json` and `map-settings.json` a headless
   server needs to create the same map.
 - Draws the map preview in the browser, for Nauvis and the Space Age planets.
-  Drag to move around the map without limit; scroll or pinch to zoom from 8
-  pixels a tile out to 64 tiles a pixel. Zoomed out it shows tiles and ore
-  (tiles only past 16 tiles a pixel).
+  Drag to move around the map without limit; scroll or pinch to zoom in
+  steps from 4 pixels a tile out to 16 tiles a pixel. Zoomed out it shows
+  tiles and ore.
 
 Plain JavaScript, no build step.
 

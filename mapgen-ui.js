@@ -83,7 +83,12 @@
 
   // The preview's zoom, in tiles per screen pixel (1 is the game's), and the
   // most chunks it keeps drawn.
-  const MIN_ZOOM = 1 / 8, MAX_ZOOM = 64, MAX_CACHED = 12000;
+  // Tiles per screen pixel at each zoom step, nearest first; the last is as
+  // far out as the view goes.
+  const ZOOMS = [0.25, 0.5, 1, 2, 4, 8, 16], MAX_ZOOM = ZOOMS[ZOOMS.length - 1];
+  // Wheel travel per zoom step, chunks kept, and the wait after the last zoom
+  // step before asking for the new level's chunks.
+  const WHEEL_STEP = 60, MAX_CACHED = 8000, ZOOM_SETTLE = 250;
 
   // The game's GUI glyphs (icons/*.png), drawn as masks so CSS sets their colour.
   const ICON_BASE = (() => {
@@ -446,7 +451,7 @@
       requestAnimationFrame(() => this.viewChanged());
       this.watchPixelRatio();
       return el('div', { class: 'fmg-deep fmg-preview' },
-        el('div', { class: 'fmg-subheader' }, zoomBtn('−', 'Zoom out', 2), zoomBtn('+', 'Zoom in', 0.5), home,
+        el('div', { class: 'fmg-subheader' }, zoomBtn('−', 'Zoom out', 1), zoomBtn('+', 'Zoom in', -1), home,
           el('div', { class: 'fmg-spacer' }), auto, planet, refresh),
         frame);
     }
@@ -458,12 +463,12 @@
     // a zoomed-out window shows as much of the map as the game does). The
     // map is drawn from chunks of 32x32 pixels at a level: level 1 is a
     // chunk of tiles; level L samples every Lth tile (an overview of tiles
-    // and ore). The view uses the level nearest its zoom, and shows a
-    // coarser level's chunk (or a black square) until a chunk arrives.
+    // and ore). z is one of ZOOMS; zoomed in, the view uses level 1, else
+    // level z, and shows a coarser level's chunk (or a black square) until a
+    // chunk arrives.
 
     level() {
-      const z = this.view.z;
-      return z <= 1 ? 1 : Math.min(MAX_ZOOM, Math.pow(2, Math.round(Math.log2(z))));
+      return Math.max(1, Math.min(MAX_ZOOM, this.view.z));
     }
 
     // Device pixels of the preview, and its size in them.
@@ -479,22 +484,31 @@
       if (this.viewFrame) return;
       this.viewFrame = requestAnimationFrame(() => {
         this.viewFrame = 0;
+        if (this.drawPending) { cancelAnimationFrame(this.drawPending); this.drawPending = 0; }
         this.drawView();
         this.requestChunks();
       });
     }
 
-    // Zoom by a factor, keeping the map point at (px, py) (device pixels in
-    // the preview; its middle by default) where it is.
-    zoomView(f, px, py) {
+    // Zoom a step out (dir 1) or in (-1), keeping the map point at (px, py)
+    // (device pixels in the preview; its middle by default) where it is. The
+    // view is redrawn from the chunks at hand straight away, but the new
+    // level's chunks are only asked for once zooming stops.
+    zoomView(dir, px, py) {
       const v = this.view, size = this.canvasSize();
       if (!size) return;
-      const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, v.z * f));
-      // Settle on one tile a pixel when passing near it.
-      const nz = Math.abs(Math.log2(z)) < 0.08 ? 1 : z;
+      let i = ZOOMS.indexOf(v.z);
+      if (i < 0) i = ZOOMS.indexOf(1);
+      const nz = ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, i + dir))];
+      if (nz === v.z) return;
       const dx = (px === undefined ? (size[0] >> 1) : px) - (size[0] >> 1), dy = (py === undefined ? (size[1] >> 1) : py) - (size[1] >> 1);
       v.x += dx * (v.z - nz); v.y += dy * (v.z - nz);
       v.z = nz;
+      // Stop the workers on the level being left.
+      if (this.previewWorkers && this.previewJob) this.previewWorkers.forEach((w) => w.postMessage({ type: 'want', job: this.previewJob, items: [] }));
+      this.wantKey = '';
+      clearTimeout(this.zoomTimer);
+      this.zoomTimer = setTimeout(() => { this.zoomTimer = 0; this.requestChunks(); }, ZOOM_SETTLE);
       this.viewChanged();
     }
 
@@ -520,9 +534,14 @@
     // from the chunks around.
     requestChunks() {
       const st = this.previewState;
-      if (!this.previewJob || !this.previewWorkers || (st && st.error)) return;
-      const L = this.level(), cache = this.chunkCache, lists = this.previewWorkers.map(() => []);
-      for (const [cx, cy] of this.visibleChunks(L)) {
+      if (!this.previewJob || !this.previewWorkers || (st && st.error) || this.zoomTimer) return;
+      const L = this.level(), chunks = this.visibleChunks(L);
+      // The same chunks as last time: the workers already have the list.
+      const key = this.previewJob + ':' + L + ':' + (chunks.length && chunks[0]) + ':' + chunks.length + ':' + (chunks.length && chunks[chunks.length - 1]);
+      if (key === this.wantKey) return;
+      this.wantKey = key;
+      const cache = this.chunkCache, lists = this.previewWorkers.map(() => []);
+      for (const [cx, cy] of chunks) {
         const got = cache.get(L + ':' + cx + ',' + cy);
         if (got && got.last) continue;
         let h = Math.imul(cx >> 3, 0x9e3779b1) ^ Math.imul(cy >> 3, 0x85ebca6b) ^ L;
@@ -536,27 +555,35 @@
       const c = this.previewCanvas, size = this.canvasSize();
       if (!size) return;
       if (c.width !== size[0] || c.height !== size[1]) { c.width = size[0]; c.height = size[1]; }
-      const ctx = c.getContext('2d'), v = this.view, L = this.level();
+      const ctx = c.getContext('2d'), L = this.level();
       ctx.imageSmoothingEnabled = false;
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, size[0], size[1]);
+      this.arrived = [];
       if (!this.chunkCache) return;
+      for (const [cx, cy] of this.visibleChunks(L)) this.drawChunk(ctx, size, L, cx, cy, true);
+    }
+
+    // Draw one chunk of the view's level where it goes, or (with coarser) a
+    // coarser level's chunk that covers it, scaled up.
+    drawChunk(ctx, size, L, cx, cy, coarser) {
+      const v = this.view;
       // Map tile (tx, ty) is at device pixel ((tx - x0) / z, (ty - y0) / z).
       const x0 = v.x - (size[0] >> 1) * v.z, y0 = v.y - (size[1] >> 1) * v.z;
       const span = 32 * L, d = span / v.z;
-      for (const [cx, cy] of this.visibleChunks(L)) {
-        const dx = (cx * span - x0) / v.z, dy = (cy * span - y0) / v.z;
-        const got = this.chunkCache.get(L + ':' + cx + ',' + cy);
-        if (got) { ctx.drawImage(got.img, Math.round(dx), Math.round(dy), Math.round(dx + d) - Math.round(dx), Math.round(dy + d) - Math.round(dy)); continue; }
-        // A coarser level's chunk that covers it, scaled up.
-        for (let M = L * 2; M <= MAX_ZOOM; M *= 2) {
-          const f = M / L, pcx = Math.floor(cx / f), pcy = Math.floor(cy / f);
-          const up = this.chunkCache.get(M + ':' + pcx + ',' + pcy);
-          if (!up) continue;
-          const s = 32 / f, sx = (cx - pcx * f) * s, sy = (cy - pcy * f) * s;
-          ctx.drawImage(up.img, sx, sy, s, s, Math.round(dx), Math.round(dy), Math.round(dx + d) - Math.round(dx), Math.round(dy + d) - Math.round(dy));
-          break;
-        }
+      const dx = Math.round((cx * span - x0) / v.z), dy = Math.round((cy * span - y0) / v.z);
+      const dw = Math.round((cx * span - x0) / v.z + d) - dx, dh = Math.round((cy * span - y0) / v.z + d) - dy;
+      if (dx >= size[0] || dy >= size[1] || dx + dw <= 0 || dy + dh <= 0) return;
+      const got = this.chunkCache.get(L + ':' + cx + ',' + cy);
+      if (got) { ctx.drawImage(got.img, dx, dy, dw, dh); return; }
+      if (!coarser) return;
+      for (let M = L * 2; M <= MAX_ZOOM; M *= 2) {
+        const f = M / L, pcx = Math.floor(cx / f), pcy = Math.floor(cy / f);
+        const up = this.chunkCache.get(M + ':' + pcx + ',' + pcy);
+        if (!up) continue;
+        const s = 32 / f;
+        ctx.drawImage(up.img, (cx - pcx * f) * s, (cy - pcy * f) * s, s, s, dx, dy, dw, dh);
+        return;
       }
     }
 
@@ -577,8 +604,15 @@
       this.previewWatch = () => { window.removeEventListener('resize', resize); if (mq) mq.removeEventListener('change', onRatio); };
     }
 
+    dropChunks() {
+      if (this.chunkCache) for (const got of this.chunkCache.values()) if (got.img.close) got.img.close();
+      this.chunkCache = null;
+    }
+
     // For a host that removes the window: stop the preview and let go of it.
     destroy() {
+      clearTimeout(this.zoomTimer);
+      this.dropChunks();
       clearTimeout(this.previewTimer);
       this.destroyed = true;
       (this.previewWorkers || []).forEach((w) => { w.onmessage = w.onerror = null; w.terminate(); });
@@ -621,8 +655,11 @@
           // Half the move pans, the change in spread zooms about the middle.
           this.view.x -= (now[0] - was[0]) / 2 * this.view.z;
           this.view.y -= (now[1] - was[1]) / 2 * this.view.z;
-          if (pinch > 0 && dist > 0) this.zoomView(pinch / dist, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
-          pinch = dist;
+          // A step for each doubling or halving of the spread.
+          if (pinch > 0 && dist > 0 && Math.abs(Math.log2(pinch / dist)) >= 0.7) {
+            this.zoomView(pinch > dist ? 1 : -1, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+            pinch = dist;
+          }
           this.viewChanged();
         }
       });
@@ -633,18 +670,28 @@
       };
       frame.addEventListener('pointerup', end);
       frame.addEventListener('pointercancel', end);
+      // The wheel zooms a step for each WHEEL_STEP of travel in one direction:
+      // a mouse wheel's notch is one step, a touchpad's small moves add up.
+      let wheel = 0, wheelAt = 0;
       frame.addEventListener('wheel', (e) => {
         e.preventDefault();
-        const p = at(e), dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
-        this.zoomView(Math.pow(2, dy / 250), p[0], p[1]);
+        const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+        if (!dy) return;
+        if (Math.sign(dy) !== Math.sign(wheel) || e.timeStamp - wheelAt > 400) wheel = 0;
+        wheelAt = e.timeStamp;
+        wheel += dy;
+        if (Math.abs(wheel) < WHEEL_STEP) return;
+        wheel = 0;
+        const p = at(e);
+        this.zoomView(Math.sign(dy), p[0], p[1]);
       }, { passive: false });
-      frame.addEventListener('dblclick', (e) => { const p = at(e); this.zoomView(0.5, p[0], p[1]); });
+      frame.addEventListener('dblclick', (e) => { const p = at(e); this.zoomView(-1, p[0], p[1]); });
       frame.addEventListener('keydown', (e) => {
         const step = 64 * Math.max(1, (window.devicePixelRatio || 1)) * this.view.z;
         const keys = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
         if (keys[e.key]) { this.view.x += keys[e.key][0]; this.view.y += keys[e.key][1]; this.viewChanged(); }
-        else if (e.key === '+' || e.key === '=') this.zoomView(0.5);
-        else if (e.key === '-' || e.key === '_') this.zoomView(2);
+        else if (e.key === '+' || e.key === '=') this.zoomView(-1);
+        else if (e.key === '-' || e.key === '_') this.zoomView(1);
         else if (e.key === 'Home') { this.view = { x: 0, y: 0, z: 1 }; this.viewChanged(); }
         else return;
         e.preventDefault();
@@ -667,7 +714,7 @@
     workers() {
       if (this.previewWorkers) return this.previewWorkers;
       const n = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
-      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=11';
+      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=12';
       this.previewWorkers = [];
       for (let i = 0; i < n; i++) {
         const w = new Worker(url);
@@ -685,7 +732,9 @@
       if (!force && key === st.key) return;
       st.key = key; st.error = '';
       const job = (this.previewJob = (this.previewJob || 0) + 1);
+      this.dropChunks();
       this.chunkCache = new Map();
+      this.wantKey = '';
       let workers;
       try { workers = this.workers(); } catch (e) { st.error = String(e.message || e); this.updatePreviewView(); return; }
       const mgs = this.result().mapGenSettings;
@@ -698,18 +747,32 @@
       if (this.destroyed || m.job !== this.previewJob) return;
       if (m.type === 'chunk') {
         const cache = this.chunkCache, key = m.level + ':' + m.cx + ',' + m.cy;
-        const img = document.createElement('canvas');
-        img.width = m.w; img.height = m.h;
-        img.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(m.pixels.buffer), m.w, m.h), 0, 0);
-        cache.delete(key);
-        cache.set(key, { img, last: m.last });
+        const was = cache.get(key);
+        if (was) { cache.delete(key); if (was.img.close) was.img.close(); }
+        cache.set(key, { img: m.bitmap, last: m.last });
         // The oldest go first.
         if (cache.size > MAX_CACHED) {
-          const it = cache.keys();
-          for (let d = cache.size - MAX_CACHED; d > 0; d--) cache.delete(it.next().value);
+          const it = cache.entries();
+          for (let d = cache.size - MAX_CACHED; d > 0; d--) {
+            const [k, old] = it.next().value;
+            cache.delete(k);
+            if (old.img.close) old.img.close();
+          }
         }
-        if (!this.drawPending) {
-          this.drawPending = requestAnimationFrame(() => { this.drawPending = 0; this.drawView(); });
+        // Draw just the new chunks, once a frame, unless the whole view is
+        // being redrawn anyway.
+        if (m.level === this.level()) (this.arrived || (this.arrived = [])).push([m.cx, m.cy]);
+        if (!this.drawPending && !this.viewFrame) {
+          this.drawPending = requestAnimationFrame(() => {
+            this.drawPending = 0;
+            const size = this.canvasSize(), L = this.level(), c = this.previewCanvas;
+            const list = this.arrived || [];
+            this.arrived = [];
+            if (!size || c.width !== size[0] || c.height !== size[1]) { this.drawView(); return; }
+            const ctx = c.getContext('2d');
+            ctx.imageSmoothingEnabled = false;
+            for (const [cx, cy] of list) this.drawChunk(ctx, size, L, cx, cy, false);
+          });
         }
       } else if (m.type === 'error') {
         this.previewFailed(m.message);
