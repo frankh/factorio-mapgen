@@ -7,6 +7,7 @@
 //     onPlay(result) {}, onBack() {},       // result: {exchangeString, mapGenSettings, mapSettings}
 //     iconBase: '/icons/',                  // optional: where the game icons live (default: icons/ next to this script)
 //     modsetToggle: true,                   // optional: a Space Age checkbox beside the seed
+//     shareUrl: (exchangeString) => url,    // optional: adds a Share link button that copies this URL
 //   });
 //
 // Needs vendor/pako.min.js, mapexchange.js and gamedata.js loaded first.
@@ -325,7 +326,8 @@
             onclick: () => { this.tab = id; this.render(); },
           }, label))),
           this.panel,
-          el('div', { class: 'fmg-exchange' }, el('span', { class: 'fmg-label-bold' }, this.t('gui', 'map-exchange-string')), importBtn, exportBtn)),
+          el('div', { class: 'fmg-exchange' }, this.opts.shareUrl ? this.shareButton() : null,
+            el('span', { class: 'fmg-label-bold' }, this.t('gui', 'map-exchange-string')), importBtn, exportBtn)),
         this.previewOpen ? this.renderPreview() : null),
         this.renderFooter(previewBtn));
       this.root.classList.toggle('fmg-previewing', !!this.previewOpen);
@@ -952,6 +954,27 @@
           catch (e) { err.textContent = /from Factorio/.test(e.message) ? e.message : G('error-importing-exchange-string'); }
         } }, G('import'))]);
       box.focus();
+    }
+
+    // Copies a link (from opts.shareUrl) that opens these settings. Without
+    // clipboard access it shows the link to copy by hand.
+    shareButton() {
+      const btn = el('button', { class: 'fmg-btn fmg-share', type: 'button' }, 'Share link');
+      btn.onclick = () => {
+        const url = this.opts.shareUrl(this.result().exchangeString);
+        const copied = () => { btn.textContent = 'Link copied'; clearTimeout(this.shareTimer); this.shareTimer = setTimeout(() => { btn.textContent = 'Share link'; }, 1500); };
+        const manual = () => {
+          const box = el('textarea', { class: 'fmg-textbox', readonly: true, spellcheck: 'false', 'aria-label': 'Share link' });
+          box.value = url;
+          const m = this.modal('Share link', [box], [
+            el('button', { class: 'fmg-dialog-btn fmg-back', type: 'button', onclick: () => m.remove() }, this.t('gui', 'close'))]);
+          box.focus(); box.select();
+        };
+        if (navigator.clipboard) navigator.clipboard.writeText(url).then(copied, manual);
+        else manual();
+      };
+      this.tip(btn, 'Copy a link that opens this map');
+      return btn;
     }
 
     openExport() {

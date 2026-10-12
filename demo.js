@@ -18,6 +18,8 @@ const fit = (g) => {
 const gen = FactorioMapGen.mount(app, {
   data, modset: params.get('modset') || 'space-age', exchangeString: params.get('s') || undefined,
   modsetToggle: true,
+  // A link to this page with the map in it; opening it loads that map.
+  shareUrl: (s) => location.origin + location.pathname + '?' + new URLSearchParams({ s }),
   onChange: fit,
   // Play shows the result over the window, like the game's own dialogs.
   onPlay: (r) => {
