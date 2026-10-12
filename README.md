@@ -8,7 +8,7 @@ uses it (`newserver.js`); `index.html` is a standalone version.
 
 | File | What it is |
 | --- | --- |
-| `mapexchange.js` | Exchange string codec (decode/encode, byte for byte), 2.0 and 2.1 layouts |
+| `mapexchange.js` | Exchange string codec (decode/encode, byte for byte), 2.0 and 2.1 layouts; decodes 1.1 too |
 | `gamedata.js` | Presets, autoplace controls, planets, map types and English text, extracted from the game |
 | `mapgen-ui.js`, `mapgen.css` | The window: preset, seed, Resources / Terrain / Enemy / Advanced tabs, import/export |
 | `vendor/pako.min.js` | zlib (pako 2.1.0, MIT/Zlib). At level 9 it gives the game's exact deflate output |
@@ -42,6 +42,25 @@ Two encodings need care:
 
 2.1 has the same layout, minus `steering`. Its `enemy_expansion` gains
 `min_expansion_distance` and `evolution_group_size_factor`.
+
+## Factorio 1.1 strings
+
+The game imports 1.1 strings too, so the codec reads them and converts them
+the way 2.0's `helpers.parse_map_exchange_string` does; the result re-exports
+as a 2.0 string. 1.1's layout differs from 2.0's in a few places:
+
+- MapGenSettings starts with `terrain_segmentation` and `water` (f32). They become the `water` control's frequency and size.
+- No no-enemies flag. Cliffs are name, elevation 0, interval and richness, with no control or smoothing.
+- MapSettings end with `max_failed_behavior_count` and then the difficulty settings (recipe and technology difficulty as u8, price multiplier, research queue setting as u8), with no asteroids.
+
+The conversion also renames the `control-setting:*` climate properties to
+`control:*`, maps `0_17-island` to `elevation_island`, writes
+`elevation_lakes` when no map type was set, turns a frequency of 0 into size
+0, and resets cliff continuity to 1 (even 0, which turned cliffs off in 1.1).
+Other 1.1 map types are kept, but 2.0 ignores them when it creates the map, so
+the page shows those as Normal. This was checked on 60 fuzzed 1.1.110 strings
+parsed by 2.0.77 (`game_parse_1_1` in the fixtures); passing the converted
+settings to a 2.0.77 `--create` gives back exactly the string the page exports.
 
 ## How it was checked
 

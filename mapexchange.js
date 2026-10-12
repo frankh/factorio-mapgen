@@ -69,6 +69,11 @@
     ['difficulty_settings', [['technology_price_multiplier', 'bare:f64'], ['spoil_time_modifier', 'bare:f64']]],
     ['asteroids', [['spawning_rate', D], ['max_ray_portals_expanded_per_tick', U]]],
   ];
+  // 1.1 has 2.0's layout up to max_failed_behavior_count, then its own
+  // difficulty settings and no asteroids.
+  const MAP_SETTINGS_1_1 = [POLLUTION, STEERING, EVOLUTION, EXPANSION_2_0, ...REST.slice(0, 3),
+    ['difficulty_settings', [['recipe_difficulty', 'bare:u8'], ['technology_difficulty', 'bare:u8'],
+      ['technology_price_multiplier', 'bare:f64'], ['research_queue_setting', 'bare:u8']]]];
   // 2.1 dropped unit steering and reworked expansion; the rest is unchanged.
   const MAP_SETTINGS_2_0 = [POLLUTION, STEERING, EVOLUTION, EXPANSION_2_0, ...REST];
   const MAP_SETTINGS_2_1 = [POLLUTION, EVOLUTION, EXPANSION_2_1, ...REST];
@@ -211,6 +216,33 @@
     return m;
   }
 
+  // Factorio 1.1's MapGenSettings: water had its own two sliders, there was
+  // no no-enemies flag, and cliffs had no control or smoothing.
+  function readMapGenSettings11(r) {
+    const m = { terrain_segmentation: r.f32(), water: r.f32() };
+    m.autoplace_controls = {};
+    for (let n = r.count(); n > 0; n--) { const k = r.str(); m.autoplace_controls[k] = readFreqSizeRich(r); }
+    m.autoplace_settings = {};
+    for (let n = r.count(); n > 0; n--) {
+      const kind = r.str(), s = { treat_missing_as_default: r.bool(), settings: {} };
+      for (let c = r.count(); c > 0; c--) { const k = r.str(); s.settings[k] = readFreqSizeRich(r); }
+      m.autoplace_settings[kind] = s;
+    }
+    m.default_enable_all_autoplace_controls = r.bool();
+    m.seed = r.u32();
+    m.width = r.u32();
+    m.height = r.u32();
+    r.pos(); r.pos(); r.bytes(4);
+    m.starting_area = r.f32();
+    m.peaceful_mode = r.bool();
+    m.starting_points = [];
+    for (let n = r.count(); n > 0; n--) m.starting_points.push(r.pos());
+    m.property_expression_names = {};
+    for (let n = r.count(); n > 0; n--) { const k = r.str(); m.property_expression_names[k] = r.str(); }
+    m.cliff_settings = { name: r.str(), cliff_elevation_0: r.f32(), cliff_elevation_interval: r.f32(), richness: r.f32() };
+    return m;
+  }
+
   function writeMapGenSettings(w, m, raw) {
     const apc = m.autoplace_controls || {};
     w.count(Object.keys(apc).length);
@@ -258,6 +290,7 @@
       case D: return r.f64();
       case U: return r.u32();
       case B: return r.bool();
+      case 'u8': return r.u8();
       case 'u32[]': { const a = []; for (let n = r.count(); n > 0; n--) a.push(r.u32()); return a; }
       case 'f64[]': { const a = []; for (let n = r.count(); n > 0; n--) a.push(r.f64()); return a; }
     }
@@ -368,10 +401,87 @@
   function decodeBytes(payload) {
     const r = new Reader(payload);
     const raw = { version: [r.u16(), r.u16(), r.u16(), r.u16()], version_extra: r.u8() };
+    if (raw.version[0] < 2) return decode11(r, raw.version);
     const map_gen_settings = readMapGenSettings(r, raw);
     const map_settings = readFields(r, layoutFor(raw.version), {});
     if (r.p !== payload.length) throw new Error('Invalid map exchange string (' + (payload.length - r.p) + ' unread bytes)');
     return { map_gen_settings, map_settings, _raw: raw };
+  }
+
+  // A 1.1 string, read as 1.1 and then converted the way 2.0's
+  // helpers.parse_map_exchange_string converts it. The result is a 2.0
+  // object (with 2.0 raw bytes), so it re-exports as a 2.0 string, as the
+  // game does; imported_from says where it came from.
+  function decode11(r, version) {
+    if (version[0] !== 1 || version[1] !== 1) {
+      throw new Error('Map exchange strings from Factorio ' + version.slice(0, 3).join('.') + ' can\'t be imported; use one from 1.1 or later.');
+    }
+    const old = readMapGenSettings11(r);
+    const oldms = readFields(r, MAP_SETTINGS_1_1, {});
+    if (r.p !== r.b.length) throw new Error('Invalid map exchange string (' + (r.b.length - r.p) + ' unread bytes)');
+    return Object.assign(migrate11(old, oldms), { _raw: JSON.parse(JSON.stringify(DEFAULT_RAW)), imported_from: version });
+  }
+
+  function migrate11(old, oldms) {
+    const m = { autoplace_controls: {} };
+    for (const k of sortedKeys(old.autoplace_controls)) {
+      m.autoplace_controls[k] = migrateControl(old.autoplace_controls[k]);
+    }
+    // Water scale and coverage became the water control's frequency and size.
+    m.autoplace_controls.water = { frequency: old.terrain_segmentation, size: old.water, richness: 1 };
+    m.autoplace_settings = {};
+    for (const kind of Object.keys(old.autoplace_settings)) {
+      const s = old.autoplace_settings[kind], set = {};
+      for (const k of Object.keys(s.settings)) set[k] = migrateControl(s.settings[k]);
+      m.autoplace_settings[kind] = { treat_missing_as_default: s.treat_missing_as_default, settings: set };
+    }
+    m.default_enable_all_autoplace_controls = old.default_enable_all_autoplace_controls;
+    m.seed = old.seed;
+    m.width = old.width;
+    m.height = old.height;
+    m.starting_area = old.starting_area;
+    m.peaceful_mode = old.peaceful_mode;
+    m.no_enemies_mode = false;
+    m.starting_points = old.starting_points;
+    m.property_expression_names = {};
+    for (const k of Object.keys(old.property_expression_names)) {
+      const v = old.property_expression_names[k];
+      m.property_expression_names[PROPERTY_NAMES_1_1[k] || k] = k === 'elevation' ? (ELEVATIONS_1_1[v] || v) : v;
+    }
+    // 1.1's default terrain is 2.0's "Lakes" map type.
+    if (!('elevation' in m.property_expression_names)) m.property_expression_names.elevation = 'elevation_lakes';
+    // The game keeps the cliff rows but resets continuity, even when 0 had
+    // turned cliffs off.
+    const c = old.cliff_settings;
+    m.cliff_settings = {
+      name: c.name, control: '', cliff_elevation_0: c.cliff_elevation_0, cliff_elevation_interval: c.cliff_elevation_interval,
+      cliff_smoothing: 1, richness: 1,
+    };
+
+    const ms = defaultMapSettings([2, 0]);
+    for (const k of Object.keys(oldms)) {
+      if (k === 'difficulty_settings') ms.difficulty_settings.technology_price_multiplier = oldms.difficulty_settings.technology_price_multiplier;
+      else if (typeof oldms[k] === 'object') mergeInto(ms[k], oldms[k]);
+      else ms[k] = oldms[k];
+    }
+    return { map_gen_settings: m, map_settings: ms };
+  }
+  const PROPERTY_NAMES_1_1 = {
+    'control-setting:moisture:frequency:multiplier': 'control:moisture:frequency',
+    'control-setting:moisture:bias': 'control:moisture:bias',
+    'control-setting:aux:frequency:multiplier': 'control:aux:frequency',
+    'control-setting:aux:bias': 'control:aux:bias',
+  };
+  const ELEVATIONS_1_1 = { '0_17-island': 'elevation_island' };
+  // A frequency of 0 turned a resource off in 1.1; 2.0 uses size 0 for that.
+  function migrateControl(c) {
+    return c.frequency === 0 ? { frequency: 1, size: 0, richness: c.richness } : { frequency: c.frequency, size: c.size, richness: c.richness };
+  }
+  function mergeInto(dst, src) {
+    for (const k of Object.keys(src)) {
+      if (src[k] && typeof src[k] === 'object' && !Array.isArray(src[k])) mergeInto(dst[k], src[k]);
+      else dst[k] = src[k];
+    }
   }
 
   function encodeBytes(obj) {

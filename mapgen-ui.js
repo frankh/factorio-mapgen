@@ -220,6 +220,11 @@
       }
       this.seed = d.map_gen_settings.seed;
       const mgs = clone(d.map_gen_settings);
+      // 1.1 map types this version doesn't have (0.16 terrain, starting
+      // plateau) are kept by the parser, but the game ignores them and makes
+      // a Normal map, so show that.
+      const pen = mgs.property_expression_names || {};
+      if (pen.elevation && !this.modsetData.elevation.some((x) => x.name === pen.elevation)) delete pen.elevation;
       // Keep the imported string's own raw bytes (version etc.) out; we export
       // with this game version, as the game does.
       this.settings = { mgs, ms: clone(d.map_settings) };
