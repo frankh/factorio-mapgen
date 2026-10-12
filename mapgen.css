@@ -251,7 +251,8 @@
 /* ---- modal dialogs (import / export) ---- */
 /* As in the game: centred on the screen, as wide as the generator without
    the preview, whether or not the preview is open. */
-.fmg-modal { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.35); z-index: 10; }
+.fmg-modal { position: fixed; inset: 0; display: flex; overflow: auto; background: rgba(0,0,0,.35); z-index: 10; }
+.fmg-modal > .fmg-window { margin: auto; }
 .fmg-modal .fmg-window, .fmg-previewing .fmg-modal .fmg-window { width: 677px; }
 .fmg-textbox {
   display: block; width: 100%; height: 200px; padding: 4px 6px; border: 0; resize: none; outline: 0; user-select: text;

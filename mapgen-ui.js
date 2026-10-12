@@ -861,7 +861,7 @@
           el('div', { class: 'fmg-deep', style: { padding: '12px', background: 'var(--shallow)' } }, body),
           el('div', { class: 'fmg-footer' }, buttons)));
       this.root.append(m);
-      m.addEventListener('keydown', (e) => { if (e.key === 'Escape') m.remove(); });
+      m.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); m.remove(); } });
       return m;
     }
 
