@@ -86,9 +86,12 @@
   // Tiles per screen pixel at each zoom step, nearest first; the last is as
   // far out as the view goes.
   const ZOOMS = [0.25, 0.5, 1, 2, 4, 8, 16], MAX_ZOOM = ZOOMS[ZOOMS.length - 1];
-  // Wheel travel per zoom step, chunks kept, and the wait after the last zoom
-  // step before asking for the new level's chunks.
-  const WHEEL_STEP = 60, MAX_CACHED = 8000, ZOOM_SETTLE = 250;
+  // Wheel travel per zoom step, and the wait after the last zoom step before
+  // asking for the new level's chunks.
+  const WHEEL_STEP = 60, ZOOM_SETTLE = 250;
+  // Chunks are kept in blocks of BLOCK x BLOCK, a canvas each, so a frame
+  // draws a few dozen images rather than thousands; at most MAX_BLOCKS.
+  const BLOCK = 8, MAX_BLOCKS = 256;
 
   // The game's GUI glyphs (icons/*.png), drawn as masks so CSS sets their colour.
   const ICON_BASE = (() => {
@@ -486,7 +489,7 @@
         this.viewFrame = 0;
         if (this.drawPending) { cancelAnimationFrame(this.drawPending); this.drawPending = 0; }
         this.drawView();
-        this.requestChunks();
+        this.requestSoon();
       });
     }
 
@@ -512,17 +515,28 @@
       this.viewChanged();
     }
 
+    // Ask for chunks at most every 100 ms while the view moves.
+    requestSoon() {
+      if (this.requestTimer) { this.requestAgain = true; return; }
+      this.requestChunks();
+      this.requestTimer = setTimeout(() => {
+        this.requestTimer = 0;
+        if (this.requestAgain) { this.requestAgain = false; this.requestSoon(); }
+      }, 100);
+    }
+
     // The chunks the view needs at its level, nearest the middle first, with
-    // a chunk's margin around it.
+    // a margin around it.
     visibleChunks(L) {
       const v = this.view, size = this.canvasSize();
       if (!size) return [];
       const span = 32 * L;
       const x0 = v.x - (size[0] >> 1) * v.z, y0 = v.y - (size[1] >> 1) * v.z;
       const x1 = v.x + (size[0] >> 1) * v.z, y1 = v.y + (size[1] >> 1) * v.z;
-      const out = [];
-      for (let cy = Math.floor(y0 / span) - 1; cy <= Math.floor(y1 / span) + 1; cy++) {
-        for (let cx = Math.floor(x0 / span) - 1; cx <= Math.floor(x1 / span) + 1; cx++) out.push([cx, cy]);
+      // A margin of about 256 device pixels, so a drag rarely shows black.
+      const m = Math.max(1, Math.ceil(256 * v.z / span)), out = [];
+      for (let cy = Math.floor(y0 / span) - m; cy <= Math.floor(y1 / span) + m; cy++) {
+        for (let cx = Math.floor(x0 / span) - m; cx <= Math.floor(x1 / span) + m; cx++) out.push([cx, cy]);
       }
       const mx = v.x / span - 0.5, my = v.y / span - 0.5;
       out.sort((a, b) => Math.hypot(a[0] - mx, a[1] - my) - Math.hypot(b[0] - mx, b[1] - my));
@@ -555,36 +569,60 @@
       const c = this.previewCanvas, size = this.canvasSize();
       if (!size) return;
       if (c.width !== size[0] || c.height !== size[1]) { c.width = size[0]; c.height = size[1]; }
-      const ctx = c.getContext('2d'), L = this.level();
+      const ctx = c.getContext('2d'), L = this.level(), v = this.view;
       ctx.imageSmoothingEnabled = false;
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, size[0], size[1]);
       this.arrived = [];
-      if (!this.chunkCache) return;
-      for (const [cx, cy] of this.visibleChunks(L)) this.drawChunk(ctx, size, L, cx, cy, true);
+      if (!this.blocks) return;
+      // Coarser levels first: they show through where the view's level has
+      // no chunk yet.
+      const x0 = v.x - (size[0] >> 1) * v.z, y0 = v.y - (size[1] >> 1) * v.z;
+      for (let M = MAX_ZOOM; M >= L; M /= 2) {
+        const span = 32 * BLOCK * M;
+        for (let by = Math.floor(y0 / span); by * span < y0 + size[1] * v.z; by++) {
+          for (let bx = Math.floor(x0 / span); bx * span < x0 + size[0] * v.z; bx++) {
+            const key = M + ':' + bx + ',' + by, b = this.blocks.get(key);
+            if (!b) continue;
+            // Most recently seen last, so the least seen go first.
+            if (M === L) { this.blocks.delete(key); this.blocks.set(key, b); }
+            const r = this.screenRect(size, span, bx, by);
+            ctx.drawImage(b.canvas, r[0], r[1], r[2], r[3]);
+          }
+        }
+      }
     }
 
-    // Draw one chunk of the view's level where it goes, or (with coarser) a
-    // coarser level's chunk that covers it, scaled up.
-    drawChunk(ctx, size, L, cx, cy, coarser) {
+    // Where a square of span tiles, the (i, j)th of its size, goes in the
+    // preview, in whole device pixels.
+    screenRect(size, span, i, j) {
       const v = this.view;
-      // Map tile (tx, ty) is at device pixel ((tx - x0) / z, (ty - y0) / z).
       const x0 = v.x - (size[0] >> 1) * v.z, y0 = v.y - (size[1] >> 1) * v.z;
-      const span = 32 * L, d = span / v.z;
-      const dx = Math.round((cx * span - x0) / v.z), dy = Math.round((cy * span - y0) / v.z);
-      const dw = Math.round((cx * span - x0) / v.z + d) - dx, dh = Math.round((cy * span - y0) / v.z + d) - dy;
-      if (dx >= size[0] || dy >= size[1] || dx + dw <= 0 || dy + dh <= 0) return;
-      const got = this.chunkCache.get(L + ':' + cx + ',' + cy);
-      if (got) { ctx.drawImage(got.img, dx, dy, dw, dh); return; }
-      if (!coarser) return;
-      for (let M = L * 2; M <= MAX_ZOOM; M *= 2) {
-        const f = M / L, pcx = Math.floor(cx / f), pcy = Math.floor(cy / f);
-        const up = this.chunkCache.get(M + ':' + pcx + ',' + pcy);
-        if (!up) continue;
-        const s = 32 / f;
-        ctx.drawImage(up.img, (cx - pcx * f) * s, (cy - pcy * f) * s, s, s, dx, dy, dw, dh);
-        return;
+      const dx = Math.round((i * span - x0) / v.z), dy = Math.round((j * span - y0) / v.z);
+      return [dx, dy, Math.round(((i + 1) * span - x0) / v.z) - dx, Math.round(((j + 1) * span - y0) / v.z) - dy];
+    }
+
+    // Put a chunk in its block.
+    keepChunk(L, cx, cy, bitmap, last) {
+      const bx = Math.floor(cx / BLOCK), by = Math.floor(cy / BLOCK), key = L + ':' + bx + ',' + by;
+      let b = this.blocks.get(key);
+      if (!b) {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 32 * BLOCK;
+        b = { canvas, ctx: canvas.getContext('2d'), chunks: [] };
+        this.blocks.set(key, b);
+        if (this.blocks.size > MAX_BLOCKS) {
+          const [k, old] = this.blocks.entries().next().value;
+          this.blocks.delete(k);
+          old.chunks.forEach((c) => this.chunkCache.delete(c));
+          old.canvas.width = old.canvas.height = 0;
+        }
       }
+      const ck = L + ':' + cx + ',' + cy;
+      if (!this.chunkCache.has(ck)) b.chunks.push(ck);
+      this.chunkCache.set(ck, { last });
+      b.ctx.drawImage(bitmap, (cx - bx * BLOCK) * 32, (cy - by * BLOCK) * 32);
+      return b;
     }
 
     // Resizing, browser zoom and moving to a screen with another scale all
@@ -605,13 +643,14 @@
     }
 
     dropChunks() {
-      if (this.chunkCache) for (const got of this.chunkCache.values()) if (got.img.close) got.img.close();
-      this.chunkCache = null;
+      if (this.blocks) for (const b of this.blocks.values()) b.canvas.width = b.canvas.height = 0;
+      this.blocks = this.chunkCache = null;
     }
 
     // For a host that removes the window: stop the preview and let go of it.
     destroy() {
       clearTimeout(this.zoomTimer);
+      clearTimeout(this.requestTimer);
       this.dropChunks();
       clearTimeout(this.previewTimer);
       this.destroyed = true;
@@ -734,6 +773,7 @@
       const job = (this.previewJob = (this.previewJob || 0) + 1);
       this.dropChunks();
       this.chunkCache = new Map();
+      this.blocks = new Map();
       this.wantKey = '';
       let workers;
       try { workers = this.workers(); } catch (e) { st.error = String(e.message || e); this.updatePreviewView(); return; }
@@ -746,22 +786,11 @@
     onPreviewMessage(m) {
       if (this.destroyed || m.job !== this.previewJob) return;
       if (m.type === 'chunk') {
-        const cache = this.chunkCache, key = m.level + ':' + m.cx + ',' + m.cy;
-        const was = cache.get(key);
-        if (was) { cache.delete(key); if (was.img.close) was.img.close(); }
-        cache.set(key, { img: m.bitmap, last: m.last });
-        // The oldest go first.
-        if (cache.size > MAX_CACHED) {
-          const it = cache.entries();
-          for (let d = cache.size - MAX_CACHED; d > 0; d--) {
-            const [k, old] = it.next().value;
-            cache.delete(k);
-            if (old.img.close) old.img.close();
-          }
-        }
+        const b = this.keepChunk(m.level, m.cx, m.cy, m.bitmap, m.last);
+        m.bitmap.close();
         // Draw just the new chunks, once a frame, unless the whole view is
         // being redrawn anyway.
-        if (m.level === this.level()) (this.arrived || (this.arrived = [])).push([m.cx, m.cy]);
+        if (m.level === this.level()) (this.arrived || (this.arrived = [])).push([m.cx, m.cy, b]);
         if (!this.drawPending && !this.viewFrame) {
           this.drawPending = requestAnimationFrame(() => {
             this.drawPending = 0;
@@ -771,7 +800,12 @@
             if (!size || c.width !== size[0] || c.height !== size[1]) { this.drawView(); return; }
             const ctx = c.getContext('2d');
             ctx.imageSmoothingEnabled = false;
-            for (const [cx, cy] of list) this.drawChunk(ctx, size, L, cx, cy, false);
+            for (const [cx, cy, b] of list) {
+              const r = this.screenRect(size, 32 * L, cx, cy);
+              if (b.canvas.width && r[0] < size[0] && r[1] < size[1] && r[0] + r[2] > 0 && r[1] + r[3] > 0) {
+                ctx.drawImage(b.canvas, (cx - Math.floor(cx / BLOCK) * BLOCK) * 32, (cy - Math.floor(cy / BLOCK) * BLOCK) * 32, 32, 32, r[0], r[1], r[2], r[3]);
+              }
+            }
           });
         }
       } else if (m.type === 'error') {
