@@ -645,12 +645,15 @@
       const b = this.previewBounds, v = this.view;
       if (!b) return;
       const x0 = v.x - (size[0] >> 1) * v.z, y0 = v.y - (size[1] >> 1) * v.z;
-      const at = (t, o, n) => Math.max(0, Math.min(n, Math.round((t - o) / v.z)));
-      let l = b[0] ? at(b[0][0], x0, size[0]) : 0, r = b[0] ? at(b[0][1], x0, size[0]) : size[0];
-      let t = b[1] ? at(b[1][0], y0, size[1]) : 0, d = b[1] ? at(b[1][1], y0, size[1]) : size[1];
-      // Zoomed far out, a map narrower than a pixel still shows as one.
-      if (r === l && r < size[0]) r++;
-      if (d === t && d < size[1]) d++;
+      // The map's edges in device pixels, on the screen or past it. Zoomed
+      // far out, a map narrower than a pixel still shows as one.
+      const edges = (lim, o, n) => {
+        if (!lim) return [0, n];
+        let a = Math.round((lim[0] - o) / v.z), z = Math.round((lim[1] - o) / v.z);
+        if (z === a) z++;
+        return [Math.max(0, Math.min(n, a)), Math.max(0, Math.min(n, z))];
+      };
+      const [l, r] = edges(b[0], x0, size[0]), [t, d] = edges(b[1], y0, size[1]);
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, size[0], t);
       ctx.fillRect(0, d, size[0], size[1] - d);
