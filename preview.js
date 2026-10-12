@@ -98,6 +98,15 @@
       return prop('tile', t, 'probability', a, a.probability_expression);
     });
     var colors = tiles.map(function (t) { return data.tile[t].color; });
+    // A map of limited width or height: past its edges every tile is
+    // out-of-map, black and blocking everything (OOM, after the real tiles).
+    var OOM = tiles.length, NT = tiles.length + 1;
+    colors.push(BLACK);
+    var lim = function (n) { return n > 0 ? [-Math.floor(n / 2), n - Math.floor(n / 2)] : null; };
+    var limX = lim(ps.mgs.width), limY = lim(ps.mgs.height);
+    function offMap(tx, ty) {
+      return (limX && (tx < limX[0] || tx >= limX[1])) || (limY && (ty < limY[0] || ty >= limY[1]));
+    }
 
     // Zoomed out (each pixel scale tiles apart) the preview is an overview:
     // tiles and ore at sample points, no other entities and no cliffs.
@@ -125,7 +134,8 @@
       e.spaced = e.def.type === 'unit-spawner' || e.def.type === 'turret';
       var layers = e.def.layers || [];
       var allowed = a.tile_restriction ? new Set(a.tile_restriction.filter(function (x) { return typeof x === 'string'; })) : null;
-      e.blockedBy = Uint8Array.from(tiles, function (t, i) {
+      e.blockedBy = Uint8Array.from(tiles.concat(['']), function (t, i) {
+        if (i === OOM) return 1;
         if (allowed && !allowed.has(t)) return 1;
         return layers.some(function (l) { return tileSets[i].has(l); }) ? 1 : 0;
       });
@@ -169,7 +179,7 @@
       if (!M) return null;
       if (K && K.epoch === M.epoch()) return K;
       K = null;
-      var n = CHUNK * CHUNK, nt = Math.max(1, tiles.length), np = Math.max(1, patterns.size);
+      var n = CHUNK * CHUNK, nt = NT, np = Math.max(1, patterns.size);
       var size = { outs: tiles.length * 4, ids: n * 4, best: n * 4, colours: nt * 4, px: n * 4, tables: np * nt,
         mask: np * n * 4, groups: (groups.length + 6 * ents.length) * 4, bp: n * 4, br: n * 4, be: n * 4, draws: maxDraws * 12 };
       var at = {};
@@ -233,6 +243,12 @@
           px[k * 4] = c[0]; px[k * 4 + 1] = c[1]; px[k * 4 + 2] = c[2]; px[k * 4 + 3] = 255;
         }
       }
+      if (limX || limY) {
+        for (k = 0; k < n; k++) {
+          if (!offMap(cx * CHUNK + (k % CHUNK), cy * CHUNK + ((k / CHUNK) | 0))) continue;
+          ids[k] = OOM; px[k * 4] = px[k * 4 + 1] = px[k * 4 + 2] = 0;
+        }
+      }
       if (entities0 >= 0 || cliffs) {
         // For collision checks a tile with no autoplace counts as the first.
         var kept = new Int16Array(n);
@@ -293,7 +309,7 @@
           });
         });
         K.ids.set(ids);
-        var a = K.at, cnt = K.M.ex.chunk_draws(n, CHUNK, cx * CHUNK, cy * CHUNK, seed, a.ids, Math.max(1, tiles.length),
+        var a = K.at, cnt = K.M.ex.chunk_draws(n, CHUNK, cx * CHUNK, cy * CHUNK, seed, a.ids, NT,
           Math.max(1, patterns.size), a.tables, a.mask, groups.length, a.groups, a.bp, a.br, a.be, a.draws);
         return K.draws.slice(0, 3 * cnt);
       }
@@ -419,7 +435,7 @@
       // multisample offsets count lattice points here, so a grid_size apart.
       var prog = N.compile(data, ps.mgs, ['cliff_elevation', 'cliffiness'], { spacing: [gx, gy] });
       var layers = new Set(proto.layers || []);
-      var blockedBy = tiles.map(function (t, i) { return (data.tile[t].layers || []).some(function (l) { return layers.has(l); }); });
+      var blockedBy = tiles.map(function (t, i) { return (data.tile[t].layers || []).some(function (l) { return layers.has(l); }); }).concat([true]);
       var boxes = ORIENTATIONS.map(function (o) { return proto.orientations[o]; });
       var VALID = new Set([0, 1, 3, 4, 5, 0xc, 0xf, 0x10, 0x11, 0x1c, 0x30, 0x33, 0x34, 0x40, 0x43, 0x44, 0x50, 0xc0, 0xc1, 0xcc, 0xf0]);
 
@@ -586,7 +602,7 @@
       }
       if (at.length) {
         var fx = new Float32Array(xs), fy = new Float32Array(ys), r = tileProg.run(fx, fy, pointsGrid(fx, fy));
-        for (k = 0; k < at.length; k++) id[at[k]] = argmax(r, k);
+        for (k = 0; k < at.length; k++) id[at[k]] = offMap(xs[k], ys[k]) ? OOM : argmax(r, k);
       }
       var tileAt = function (tx, ty) {
         var i = tx - cx * CHUNK + B, j = ty - cy * CHUNK + B;

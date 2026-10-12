@@ -589,9 +589,10 @@
       // First the coarsest level's tiles, a few quick chunks to show under
       // the view's level until it arrives.
       if (L < MAX_ZOOM) {
-        for (const [cx, cy] of this.visibleChunks(MAX_ZOOM)) if (!cache.has(MAX_ZOOM + ':' + cx + ',' + cy)) want(MAX_ZOOM, cx, cy, true);
+        for (const [cx, cy] of this.visibleChunks(MAX_ZOOM)) if (this.onMap(MAX_ZOOM, cx, cy) && !cache.has(MAX_ZOOM + ':' + cx + ',' + cy)) want(MAX_ZOOM, cx, cy, true);
       }
       for (const [cx, cy] of chunks) {
+        if (!this.onMap(L, cx, cy)) continue;
         const got = cache.get(L + ':' + cx + ',' + cy);
         if (!got || !got.last) want(L, cx, cy, false);
       }
@@ -626,6 +627,29 @@
           }
         }
       }
+      this.maskOffMap(ctx, size);
+    }
+
+    // Whether a chunk at a level has any of a limited map's tiles.
+    onMap(L, cx, cy) {
+      const b = this.previewBounds, span = 32 * L;
+      if (!b) return true;
+      return (!b[0] || (cx * span < b[0][1] && (cx + 1) * span > b[0][0])) && (!b[1] || (cy * span < b[1][1] && (cy + 1) * span > b[1][0]));
+    }
+
+    // Black beyond the edges of a limited map, as in the game's preview.
+    maskOffMap(ctx, size) {
+      const b = this.previewBounds, v = this.view;
+      if (!b) return;
+      const x0 = v.x - (size[0] >> 1) * v.z, y0 = v.y - (size[1] >> 1) * v.z;
+      const at = (t, o, n) => Math.max(0, Math.min(n, Math.round((t - o) / v.z)));
+      const l = b[0] ? at(b[0][0], x0, size[0]) : 0, r = b[0] ? at(b[0][1], x0, size[0]) : size[0];
+      const t = b[1] ? at(b[1][0], y0, size[1]) : 0, d = b[1] ? at(b[1][1], y0, size[1]) : size[1];
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, size[0], t);
+      ctx.fillRect(0, d, size[0], size[1] - d);
+      ctx.fillRect(0, t, l, d - t);
+      ctx.fillRect(r, t, size[0] - r, d - t);
     }
 
     // Where a square of span tiles, the (i, j)th of its size, goes in the
@@ -793,7 +817,7 @@
     workers() {
       if (this.previewWorkers) return this.previewWorkers;
       const n = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
-      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=14';
+      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=15';
       this.previewWorkers = [];
       for (let i = 0; i < n; i++) {
         const w = new Worker(url);
@@ -818,6 +842,9 @@
       let workers;
       try { workers = this.workers(); } catch (e) { st.error = String(e.message || e); this.updatePreviewView(); return; }
       const mgs = this.result().mapGenSettings;
+      // A limited map: the tiles from -size/2, as the game places them.
+      const lim = (n) => (n > 0 ? [-Math.floor(n / 2), n - Math.floor(n / 2)] : null);
+      this.previewBounds = mgs.width > 0 || mgs.height > 0 ? [lim(mgs.width), lim(mgs.height)] : null;
       workers.forEach((w) => w.postMessage({ type: 'config', job, modset: this.modset, planet: this.previewPlanet || 'nauvis', mgs }));
       this.updatePreviewView();
       this.viewChanged();
@@ -848,6 +875,7 @@
                 ctx.drawImage(b.canvas, (cx - Math.floor(cx / BLOCK) * BLOCK) * 32, (cy - Math.floor(cy / BLOCK) * BLOCK) * 32, 32, 32, r[0], r[1], r[2], r[3]);
               }
             }
+            this.maskOffMap(ctx, size);
           });
         }
       } else if (m.type === 'error') {

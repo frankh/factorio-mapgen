@@ -13,7 +13,7 @@
 // Messages out: {type: 'chunk', job, level, pass, last, cx, cy, bitmap}
 //               {type: 'error', job, message}
 /* global importScripts, FactorioNoise, FactorioNoiseData, FactorioPreview */
-importScripts('noise.js?v=10', 'noisedata.js?v=7', 'preview.js?v=11');
+importScripts('noise.js?v=10', 'noisedata.js?v=7', 'preview.js?v=12');
 
 // Pass 0's chunks kept for pass 1 (and a renderer's own caches), at most.
 const KEEP = 3000;
