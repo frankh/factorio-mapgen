@@ -1,9 +1,9 @@
 #!/bin/sh
-# Compiles noise.c to WebAssembly and embeds it in web/static/mapgen/noise.js
+# Compiles noise.c to WebAssembly and embeds it in noise.js
 # (as NOISE_WASM, base64). Needs clang with the wasm32 target and wasm-ld.
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-noise="$here/../../../web/static/mapgen/noise.js"
+noise="$here/../noise.js"
 tmp=$(mktemp -d)
 clang --target=wasm32 -O3 -msimd128 -mnontrapping-fptoint -ffp-contract=off -nostdlib \
   -Wl,--no-entry -Wl,--strip-all -Wl,--export=__heap_base -o "$tmp/noise.wasm" "$here/noise.c"

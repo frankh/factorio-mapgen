@@ -3,8 +3,8 @@
 // and its WebAssembly noise kernel against its JS one.
 const test = require('node:test');
 const assert = require('node:assert');
-const N = require('../../../web/static/mapgen/noise.js');
-const D = require('../../../web/static/mapgen/noisedata.js');
+const N = require('../noise.js');
+const D = require('../noisedata.js');
 const fx = require('./noise-fixtures.json');
 
 // Everything matches the game to the bit except Voronoi distances (worked

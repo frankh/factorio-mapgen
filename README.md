@@ -1,10 +1,43 @@
-# Map generator
+# factorio-mapgen
 
-`web/static/mapgen/` is a plain-JS copy of Factorio's **Map generator** window
-(Single player → New game). It produces the same map exchange strings as the
-game, imports them, and hands back the `--map-gen-settings` / `--map-settings`
-files a headless server needs to create that map. The "Start a server" page
-uses it (`newserver.js`); `index.html` is a standalone version.
+Factorio's **Map generator** window (Single player → New game) in the browser,
+in plain JavaScript with no build step. It:
+
+- produces the same map exchange strings as the game, byte for byte, and
+  imports 1.1, 2.0 and 2.1 strings
+- hands back the `--map-gen-settings` / `--map-settings` files a headless
+  server needs to create that map
+- draws the map preview in the browser the way the game does, for Nauvis and
+  the Space Age planets
+
+**Try it: https://frankh.github.io/factorio-mapgen/**
+
+`index.html` is the standalone page. To run it locally, serve this directory
+over HTTP (the preview uses Web Workers, which don't load from `file://`):
+
+    python3 -m http.server
+
+## Embedding
+
+Load `vendor/pako.min.js`, `mapexchange.js`, `gamedata.js` and `mapgen-ui.js`
+(plus `mapgen.css`), then:
+
+```js
+const data = Object.values(FactorioMapGenData)[0];
+const gen = FactorioMapGen.mount(document.getElementById('app'), {
+  data,
+  modset: 'space-age',              // or 'vanilla'
+  exchangeString: '>>>…<<<',        // optional starting settings
+  onPlay(r) {                       // r: {exchangeString, mapGenSettings, mapSettings, …}
+  },
+  onBack() {},
+});
+```
+
+Icons and the preview worker are found next to `mapgen-ui.js`; pass `iconBase`
+or `workerUrl` to put them elsewhere. `demo.js` is a complete example.
+
+## Files
 
 | File | What it is |
 | --- | --- |
@@ -84,11 +117,11 @@ All of this was checked against the real game: the 2.0.77 and 2.1.9 headless ser
 
 `test/fixtures.json` holds the game-made data. Run the suite with:
 
-    node --test tools/mapgen/test/*.test.js
+    node --test test/*.test.js
 
 ## Updating for a new Factorio version
 
-    python3 tools/mapgen/extract.py /path/to/factorio            # writes web/static/mapgen/gamedata.js
+    python3 tools/extract.py /path/to/factorio            # writes gamedata.js
 
 `/path/to/factorio` is the directory holding `bin/` and `data/`; the headless
 build is enough. If the version header or map settings changed, the codec's
@@ -250,15 +283,16 @@ maps it generates. `test/noise.test.js` holds a sample of those values.
   worms whose `map_generator_bounding_box` meets one already drawn are left
   out, and enemies go on top of everything in the enemy colour.
 
-### Server fallback
-
-When the browser can't render something it posts the map gen settings to
-`POST /mapgen/preview` (`internal/control/preview.go`). The control plane
-renders it with the real headless game (`factorio --generate-map-preview`,
-about 3 to 5 seconds) and caches the PNG. On first use it fetches the game
-from the `factoriotools/factorio` image on Docker Hub, unpacking only `bin/`
-and `data/`, and checks for a newer build of the tag every few hours
-(`internal/mappreview`). That is why the image is Debian-based: the game needs
-glibc.
+### Updating the preview data
 
 `extract_noise.py /path/to/factorio` refreshes `noisedata.js`.
+
+## License
+
+The code is MIT licensed (see `LICENSE`). Titillium Web is under the SIL Open
+Font License (`fonts/OFL.txt`); pako is MIT/Zlib (`vendor/pako.LICENSE`).
+
+`gamedata.js`, `noisedata.js`, the icons in `icons/` and the test fixtures are
+extracted from Factorio and are © Wube Software. They are included so the
+window can match the game. This project is not affiliated with or endorsed
+by Wube Software.

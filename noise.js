@@ -6,9 +6,9 @@
 //   var out = prog.run(xs, ys);          // Float32Arrays, one per output
 //
 // defs holds the game's noise_expression and noise_function prototypes (see
-// tools/mapgen/extract_noise.py). Results match the game's own
+// tools/extract_noise.py). Results match the game's own
 // LuaSurface.calculate_tile_properties to the bit for nearly every builtin
-// (Voronoi distances to float precision); see tools/mapgen/README.md for how
+// (Voronoi distances to float precision); see README.md for how
 // each was worked out. run(xs, ys, grid) with grid set for a chunk's
 // positions takes the game's grid path through the noise, as map generation
 // does.
@@ -143,7 +143,7 @@
   }
 
   // The same kernel in WebAssembly with SIMD, four points at a time, and
-  // the program's element-wise operators (from tools/mapgen/wasm/noise.c;
+  // the program's element-wise operators (from wasm/noise.c;
   // build.sh there regenerates NOISE_WASM). Their results are the same to
   // the bit. Browsers without WebAssembly SIMD, or pages whose CSP forbids
   // compiling it, use the JS loops.

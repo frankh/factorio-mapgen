@@ -1,4 +1,4 @@
-// WebAssembly (with SIMD) kernels for web/static/mapgen/noise.js and
+// WebAssembly (with SIMD) kernels for noise.js and
 // preview.js, mostly four points at a time. Each gives the same bits as the
 // JS it replaces:
 //

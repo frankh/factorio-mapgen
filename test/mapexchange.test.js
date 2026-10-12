@@ -1,10 +1,10 @@
-// Checks web/static/mapgen/mapexchange.js against strings and settings the
-// real game produced (see fixtures.json). Run: node --test tools/mapgen/test/
+// Checks mapexchange.js against strings and settings the
+// real game produced (see fixtures.json). Run: node --test test/*.test.js
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
-const MX = require(path.join(__dirname, '../../../web/static/mapgen/mapexchange.js'));
+const MX = require(path.join(__dirname, '../mapexchange.js'));
 const fx = require('./fixtures.json');
 
 // The game's parser fills in absent autoplace controls with 1/1/1 and widens

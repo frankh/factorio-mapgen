@@ -271,7 +271,7 @@
 .fmg-ico { display: inline-block; width: 18px; height: 18px; flex: none; vertical-align: middle; background-size: contain; background-repeat: no-repeat; }
 .fmg-sprite { image-rendering: auto; }
 
-/* Full-screen host for the window on other pages (see newserver.js). */
+/* Full-screen host for the window on other pages (see the "Embedding" section of README.md). */
 .fmg-overlay { position: fixed; inset: 0; z-index: 100; overflow: auto; display: flex; justify-content: center; align-items: flex-start;
   padding: 24px 8px; background: rgba(12, 10, 9, .88); }
 
