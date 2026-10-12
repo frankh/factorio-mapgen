@@ -425,6 +425,8 @@
 
     renderPreview() {
       const G = (k) => this.t('gui-map-generator', k);
+      // A drag on the frame this replaces never gets its pointerup.
+      this.dragging = false;
       // Auto-refresh starts on (the game starts it off).
       const st = this.previewState || (this.previewState = { auto: true });
       const planets = this.modsetData.planets;
@@ -522,8 +524,10 @@
       const v = this.view, size = this.canvasSize();
       if (!size) return;
       const zooms = this.zooms();
-      let i = zooms.indexOf(v.z);
-      if (i < 0) i = zooms.indexOf(1);
+      // The nearest step, should the screen's pixel ratio have changed.
+      let i = 0;
+      zooms.forEach((z, j) => { if (Math.abs(Math.log2(z / v.z)) < Math.abs(Math.log2(zooms[i] / v.z))) i = j; });
+      if (zooms[i] !== v.z && Math.sign(zooms[i] - v.z) === dir) i -= dir;
       const nz = zooms[Math.max(0, Math.min(zooms.length - 1, i + dir))];
       if (nz === v.z) return;
       const dx = (px === undefined ? (size[0] >> 1) : px) - (size[0] >> 1), dy = (py === undefined ? (size[1] >> 1) : py) - (size[1] >> 1);
@@ -789,7 +793,7 @@
     workers() {
       if (this.previewWorkers) return this.previewWorkers;
       const n = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
-      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=13';
+      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=14';
       this.previewWorkers = [];
       for (let i = 0; i < n; i++) {
         const w = new Worker(url);
@@ -820,7 +824,7 @@
     }
 
     onPreviewMessage(m) {
-      if (this.destroyed || m.job !== this.previewJob) return;
+      if (this.destroyed || m.job !== this.previewJob) { if (m.bitmap) m.bitmap.close(); return; }
       if (m.type === 'chunk') {
         const b = this.keepChunk(m.level, m.cx, m.cy, m.bitmap, m.last);
         m.bitmap.close();

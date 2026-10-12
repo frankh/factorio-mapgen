@@ -18,7 +18,7 @@ importScripts('noise.js?v=10', 'noisedata.js?v=7', 'preview.js?v=11');
 // Pass 0's chunks kept for pass 1 (and a renderer's own caches), at most.
 const KEEP = 3000;
 
-let config = null, renderers = new Map(), wanted = [], quick = false, terrain = new Map();
+let config = null, renderers = new Map(), wanted = [], wantedKeys = new Set(), quick = false, terrain = new Map();
 
 // Yields between chunks so new messages get through. setTimeout won't do: a
 // chain of them is held to 4 ms apiece, longer than most chunks take. A
@@ -59,7 +59,14 @@ function step() {
       terrain.delete(it.key);
     } else {
       terrain.set(it.key, pixels);
-      if (terrain.size > KEEP) terrain.delete(terrain.keys().next().value);
+      // Over KEEP, let go of the oldest no longer wanted: dropping a wanted
+      // one would only have it drawn again, over and over.
+      if (terrain.size > KEEP) {
+        for (const k of terrain.keys()) {
+          if (terrain.size <= KEEP) break;
+          if (!wantedKeys.has(k)) terrain.delete(k);
+        }
+      }
     }
     if (last || it.only) wanted.splice(wanted.indexOf(it), 1);
     r.trim(KEEP);
@@ -81,12 +88,13 @@ self.onmessage = (e) => {
   if (m.type === 'config') {
     // The last settings' buffers won't be read again.
     FactorioNoise.resetHeap();
-    config = m; renderers = new Map(); wanted = []; terrain = new Map();
+    config = m; renderers = new Map(); wanted = []; wantedKeys = new Set(); terrain = new Map();
     return;
   }
   if (m.type === 'want') {
     if (!config || m.job !== config.job) return;
     wanted = m.items.map(([level, cx, cy, only]) => ({ level, cx, cy, only: !!only, key: level + ':' + cx + ',' + cy }));
+    wantedKeys = new Set(wanted.map((it) => it.key));
     quick = !!m.quick;
     later();
   }
