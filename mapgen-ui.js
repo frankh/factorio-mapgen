@@ -615,6 +615,9 @@
       // no chunk yet.
       const x0 = v.x - (size[0] >> 1) * v.z, y0 = v.y - (size[1] >> 1) * v.z;
       for (let M = MAX_ZOOM; M >= L; M /= 2) {
+        // One tile a pixel, chunks are black past the edge themselves, and
+        // the game draws cliffs a tile over it: mask only what's under them.
+        if (M === 1) this.maskOffMap(ctx, size);
         const span = 32 * BLOCK * M;
         for (let by = Math.floor(y0 / span); by * span < y0 + size[1] * v.z; by++) {
           for (let bx = Math.floor(x0 / span); bx * span < x0 + size[0] * v.z; bx++) {
@@ -627,7 +630,7 @@
           }
         }
       }
-      this.maskOffMap(ctx, size);
+      if (L > 1) this.maskOffMap(ctx, size);
     }
 
     // Whether a chunk at a level has any of a limited map's tiles.
@@ -643,8 +646,11 @@
       if (!b) return;
       const x0 = v.x - (size[0] >> 1) * v.z, y0 = v.y - (size[1] >> 1) * v.z;
       const at = (t, o, n) => Math.max(0, Math.min(n, Math.round((t - o) / v.z)));
-      const l = b[0] ? at(b[0][0], x0, size[0]) : 0, r = b[0] ? at(b[0][1], x0, size[0]) : size[0];
-      const t = b[1] ? at(b[1][0], y0, size[1]) : 0, d = b[1] ? at(b[1][1], y0, size[1]) : size[1];
+      let l = b[0] ? at(b[0][0], x0, size[0]) : 0, r = b[0] ? at(b[0][1], x0, size[0]) : size[0];
+      let t = b[1] ? at(b[1][0], y0, size[1]) : 0, d = b[1] ? at(b[1][1], y0, size[1]) : size[1];
+      // Zoomed far out, a map narrower than a pixel still shows as one.
+      if (r === l && r < size[0]) r++;
+      if (d === t && d < size[1]) d++;
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, size[0], t);
       ctx.fillRect(0, d, size[0], size[1] - d);
@@ -875,7 +881,7 @@
                 ctx.drawImage(b.canvas, (cx - Math.floor(cx / BLOCK) * BLOCK) * 32, (cy - Math.floor(cy / BLOCK) * BLOCK) * 32, 32, 32, r[0], r[1], r[2], r[3]);
               }
             }
-            this.maskOffMap(ctx, size);
+            if (L > 1) this.maskOffMap(ctx, size);
           });
         }
       } else if (m.type === 'error') {
