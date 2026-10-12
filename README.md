@@ -285,7 +285,7 @@ maps it generates. `test/noise.test.js` holds a sample of those values.
 
 ### Updating the preview data
 
-`extract_noise.py /path/to/factorio` refreshes `noisedata.js`.
+`python3 tools/extract_noise.py /path/to/factorio` refreshes `noisedata.js`.
 
 ## License
 
