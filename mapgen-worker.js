@@ -1,64 +1,87 @@
 // Renders the map preview off the main thread, a chunk at a time, the way
-// the game's preview fills in: terrain first, nearest the middle first, then
-// entities on top.
+// the game's preview fills in: terrain first, then entities on top.
 //
-// Messages in:  {type: 'start', job, modset, planet, mgs, size, scale, chunks: [[cx, cy], ...]}
-//               {type: 'stop', job}
-// Messages out: {type: 'chunk', job, pass, cx, cy, w, h, pixels (RGBA)}
-//               {type: 'done', job}, {type: 'error', job, message}
+// A chunk is 32x32 pixels at a level: level 1 is one tile a pixel (with
+// cliffs, trees, rocks, enemies and ore); level L > 1 samples every Lth
+// tile, an overview of tiles and ore (FactorioPreview.renderer's scale).
+//
+// Messages in:  {type: 'config', job, modset, planet, mgs}: new settings
+//               {type: 'want', job, items: [[level, cx, cy], ...]}: the
+//                 chunks wanted, most wanted first; replaces the last list
+// Messages out: {type: 'chunk', job, level, pass, last, cx, cy, w, h, pixels (RGBA)}
+//               {type: 'error', job, message}
 /* global importScripts, FactorioNoise, FactorioNoiseData, FactorioPreview */
-importScripts('noise.js?v=9', 'noisedata.js?v=7', 'preview.js?v=9');
+importScripts('noise.js?v=10', 'noisedata.js?v=7', 'preview.js?v=10');
 
-let current = 0;
+// Pass 0's chunks kept for pass 1 (and a renderer's own caches), at most.
+const KEEP = 3000;
 
-// Yields between chunks so a 'stop' gets through. setTimeout won't do: a
+let config = null, renderers = new Map(), wanted = [], terrain = new Map();
+
+// Yields between chunks so new messages get through. setTimeout won't do: a
 // chain of them is held to 4 ms apiece, longer than most chunks take. A
-// message to ourselves comes straight back. One at a time: a new job's step
-// takes the place of the last job's.
+// message to ourselves comes straight back.
 const tick = new MessageChannel();
-let next = null, posted = false;
-tick.port1.onmessage = () => { posted = false; const f = next; next = null; if (f) f(); };
-const later = (f) => {
-  next = f;
-  if (!posted) { posted = true; tick.port2.postMessage(0); }
-};
+let posted = false;
+tick.port1.onmessage = () => { posted = false; step(); };
+const later = () => { if (!posted) { posted = true; tick.port2.postMessage(0); } };
+
+function renderer(level) {
+  let r = renderers.get(level);
+  if (!r) {
+    r = FactorioPreview.renderer(FactorioNoiseData.modsets[config.modset], config.planet, config.mgs, level);
+    renderers.set(level, r);
+  }
+  return r;
+}
+
+// The next piece of work: the first wanted chunk without terrain, else the
+// first with terrain still waiting for its entities.
+function next() {
+  for (const it of wanted) if (!terrain.has(it.key)) return [it, 0];
+  for (const it of wanted) if (terrain.has(it.key)) return [it, 1];
+  return null;
+}
+
+function step() {
+  if (!config || !wanted.length) return;
+  const job = config.job;
+  try {
+    const work = next();
+    if (!work) return;
+    const [it, pass] = work;
+    const r = renderer(it.level);
+    const pixels = r.render(pass, it.cx, it.cy, terrain.get(it.key));
+    const last = pass === r.passes - 1;
+    if (last) {
+      terrain.delete(it.key);
+      wanted.splice(wanted.indexOf(it), 1);
+    } else {
+      terrain.set(it.key, pixels);
+      if (terrain.size > KEEP) terrain.delete(terrain.keys().next().value);
+    }
+    r.trim(KEEP);
+    const copy = pixels.slice();
+    self.postMessage({ type: 'chunk', job, level: it.level, pass, last, cx: it.cx, cy: it.cy, w: FactorioPreview.CHUNK, h: FactorioPreview.CHUNK, pixels: copy }, [copy.buffer]);
+  } catch (err) {
+    wanted = [];
+    self.postMessage({ type: 'error', job, message: String(err && err.message || err) });
+    return;
+  }
+  later();
+}
 
 self.onmessage = (e) => {
   const m = e.data;
-  if (m.type === 'stop') { if (m.job === current) current = 0; return; }
-  if (m.type !== 'start') return;
-  current = m.job;
-  // The last preview's buffers won't be read again.
-  FactorioNoise.resetHeap();
-  let renderer;
-  try {
-    renderer = FactorioPreview.renderer(FactorioNoiseData.modsets[m.modset], m.planet, m.mgs, m.scale);
-  } catch (err) {
-    self.postMessage({ type: 'error', job: m.job, message: String(err && err.message || err) });
+  if (m.type === 'config') {
+    // The last settings' buffers won't be read again.
+    FactorioNoise.resetHeap();
+    config = m; renderers = new Map(); wanted = []; terrain = new Map();
     return;
   }
-  const C = FactorioPreview.CHUNK;
-  const passes = renderer.passes;
-  // One pass at a time over every chunk, so the whole map gets terrain before
-  // any of it gets trees and ore. Yield between chunks so 'stop' is seen.
-  let pass = 0, i = 0;
-  const state = new Map();
-  const step = () => {
-    if (current !== m.job) return;
-    if (pass >= passes) { self.postMessage({ type: 'done', job: m.job }); return; }
-    const [cx, cy] = m.chunks[i];
-    const key = cx + ',' + cy;
-    try {
-      const pixels = renderer.render(pass, cx, cy, state.get(key));
-      state.set(key, pixels);
-      const copy = pixels.slice();
-      self.postMessage({ type: 'chunk', job: m.job, pass, cx, cy, w: C, h: C, pixels: copy }, [copy.buffer]);
-    } catch (err) {
-      self.postMessage({ type: 'error', job: m.job, message: String(err && err.message || err) });
-      return;
-    }
-    if (++i >= m.chunks.length) { i = 0; pass++; }
-    later(step);
-  };
-  step();
+  if (m.type === 'want') {
+    if (!config || m.job !== config.job) return;
+    wanted = m.items.map(([level, cx, cy]) => ({ level, cx, cy, key: level + ':' + cx + ',' + cy }));
+    later();
+  }
 };

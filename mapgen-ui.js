@@ -81,10 +81,9 @@
     scrap: '#8e6c4e', 'lithium-brine': '#d6ecea', 'fluorine-vent': '#79c8ee',
   };
 
-  // The preview covers this many tiles each way and, as in the game, draws
-  // one tile per screen pixel (not per CSS pixel), so a scaled display or a
-  // zoomed-out window still shows as much of the map as the game does.
-  const PREVIEW_SIZE = 2048;
+  // The preview's zoom, in tiles per screen pixel (1 is the game's), and the
+  // most chunks it keeps drawn.
+  const MIN_ZOOM = 1 / 8, MAX_ZOOM = 64, MAX_CACHED = 12000;
 
   // The game's GUI glyphs (icons/*.png), drawn as masks so CSS sets their colour.
   const ICON_BASE = (() => {
@@ -419,10 +418,8 @@
       // Auto-refresh starts on (the game starts it off).
       const st = this.previewState || (this.previewState = { auto: true });
       const planets = this.modsetData.planets;
-      if (!this.previewCanvas) {
-        const c = el('canvas', { class: 'fmg-preview-canvas', width: PREVIEW_SIZE, height: PREVIEW_SIZE });
-        this.previewCanvas = c;
-      }
+      if (!this.previewCanvas) this.previewCanvas = el('canvas', { class: 'fmg-preview-canvas', width: 1, height: 1 });
+      if (!this.view) this.view = { x: 0, y: 0, z: 1 };
       const status = st.error ? el('div', { class: 'fmg-preview-status fmg-error' }, G('preview-error') + '\n' + st.error) : null;
       const refresh = el('button', { class: 'fmg-btn fmg-icon', type: 'button', 'aria-label': this.t('gui', 'refresh'), onclick: () => this.loadPreview(true) }, glyph('refresh'));
       this.tip(refresh, () => this.t('gui', 'refresh'));
@@ -432,44 +429,142 @@
         options: planets.map((p) => ({ value: p.name, text: p.label, icon: this.iconBase + 'planet/' + p.name + '.png' })),
         onChange: (v) => { this.previewPlanet = v; this.loadPreview(true); },
       });
-      const frame = el('div', { class: 'fmg-preview-frame' }, this.previewCanvas, status);
-      this.dragToScroll(frame);
-      // After the host has set the window's zoom.
-      requestAnimationFrame(() => this.sizePreviewCanvas(true));
+      const zoomBtn = (text, label, f) => {
+        const b = el('button', { class: 'fmg-btn fmg-icon fmg-zoom', type: 'button', 'aria-label': label, onclick: () => this.zoomView(f) }, text);
+        this.tip(b, label);
+        return b;
+      };
+      const home = el('button', { class: 'fmg-btn fmg-zoom-home', type: 'button', onclick: () => { this.view = { x: 0, y: 0, z: 1 }; this.viewChanged(); } }, 'Spawn');
+      this.tip(home, 'Back to the spawn, one tile a pixel');
+      const frame = el('div', { class: 'fmg-preview-frame', tabindex: 0 }, this.previewCanvas, status);
+      this.panAndZoom(frame);
+      if (this.previewResize) this.previewResize.disconnect();
+      if (typeof ResizeObserver !== 'undefined') {
+        this.previewResize = new ResizeObserver(() => this.viewChanged());
+        this.previewResize.observe(frame);
+      }
+      requestAnimationFrame(() => this.viewChanged());
       this.watchPixelRatio();
       return el('div', { class: 'fmg-deep fmg-preview' },
-        el('div', { class: 'fmg-subheader' }, el('div', { class: 'fmg-spacer' }), auto, planet, refresh),
+        el('div', { class: 'fmg-subheader' }, zoomBtn('−', 'Zoom out', 2), zoomBtn('+', 'Zoom in', 0.5), home,
+          el('div', { class: 'fmg-spacer' }), auto, planet, refresh),
         frame);
     }
 
-    // One tile per device pixel. The view is kept as the map point at its
-    // middle (a fraction of the map), so it survives size changes.
-    sizePreviewCanvas(place) {
-      const c = this.previewCanvas;
-      if (!c) return;
+    // ---- the map view ----
+    //
+    // view: the tile at the middle of the preview (x, y) and the tiles per
+    // screen pixel (z; 1 by default, as in the game, so a scaled display or
+    // a zoomed-out window shows as much of the map as the game does). The
+    // map is drawn from chunks of 32x32 pixels at a level: level 1 is a
+    // chunk of tiles; level L samples every Lth tile (an overview of tiles
+    // and ore). The view uses the level nearest its zoom, and shows a
+    // coarser level's chunk (or a black square) until a chunk arrives.
+
+    level() {
+      const z = this.view.z;
+      return z <= 1 ? 1 : Math.min(MAX_ZOOM, Math.pow(2, Math.round(Math.log2(z))));
+    }
+
+    // Device pixels of the preview, and its size in them.
+    canvasSize() {
+      const c = this.previewCanvas, frame = c.parentNode;
+      if (!frame || !frame.isConnected) return null;
       const z = parseFloat(this.root.style.zoom) || 1;
-      const size = PREVIEW_SIZE / ((window.devicePixelRatio || 1) * z);
-      const centre = this.previewCentre || [0.5, 0.5];
-      if (Math.abs(size - (this.previewCssSize || 0)) > 0.01) {
-        this.previewCssSize = size;
-        c.style.width = c.style.height = size + 'px';
-        place = true;
+      const k = (window.devicePixelRatio || 1) * z;
+      return [Math.max(1, Math.round(frame.clientWidth * k)), Math.max(1, Math.round(frame.clientHeight * k))];
+    }
+
+    viewChanged() {
+      if (this.viewFrame) return;
+      this.viewFrame = requestAnimationFrame(() => {
+        this.viewFrame = 0;
+        this.drawView();
+        this.requestChunks();
+      });
+    }
+
+    // Zoom by a factor, keeping the map point at (px, py) (device pixels in
+    // the preview; its middle by default) where it is.
+    zoomView(f, px, py) {
+      const v = this.view, size = this.canvasSize();
+      if (!size) return;
+      const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, v.z * f));
+      // Settle on one tile a pixel when passing near it.
+      const nz = Math.abs(Math.log2(z)) < 0.08 ? 1 : z;
+      const dx = (px === undefined ? (size[0] >> 1) : px) - (size[0] >> 1), dy = (py === undefined ? (size[1] >> 1) : py) - (size[1] >> 1);
+      v.x += dx * (v.z - nz); v.y += dy * (v.z - nz);
+      v.z = nz;
+      this.viewChanged();
+    }
+
+    // The chunks the view needs at its level, nearest the middle first, with
+    // a chunk's margin around it.
+    visibleChunks(L) {
+      const v = this.view, size = this.canvasSize();
+      if (!size) return [];
+      const span = 32 * L;
+      const x0 = v.x - (size[0] >> 1) * v.z, y0 = v.y - (size[1] >> 1) * v.z;
+      const x1 = v.x + (size[0] >> 1) * v.z, y1 = v.y + (size[1] >> 1) * v.z;
+      const out = [];
+      for (let cy = Math.floor(y0 / span) - 1; cy <= Math.floor(y1 / span) + 1; cy++) {
+        for (let cx = Math.floor(x0 / span) - 1; cx <= Math.floor(x1 / span) + 1; cx++) out.push([cx, cy]);
       }
-      const frame = c.parentNode;
-      if (!place || !frame || !frame.isConnected) return;
-      frame.scrollLeft = centre[0] * c.offsetWidth - frame.clientWidth / 2;
-      frame.scrollTop = centre[1] * c.offsetHeight - frame.clientHeight / 2;
-      this.previewCentre = centre;
-      // Scroll events from this placement (or the frame resizing before the
-      // next one) aren't the player moving the map.
-      this.previewPlaced = [frame.scrollLeft, frame.scrollTop, frame.clientWidth, frame.clientHeight];
+      const mx = v.x / span - 0.5, my = v.y / span - 0.5;
+      out.sort((a, b) => Math.hypot(a[0] - mx, a[1] - my) - Math.hypot(b[0] - mx, b[1] - my));
+      return out;
+    }
+
+    // Tell each worker what it should render now. A region of 8x8 chunks
+    // always goes to the same worker, which keeps the tiles pass 1 needs
+    // from the chunks around.
+    requestChunks() {
+      const st = this.previewState;
+      if (!this.previewJob || !this.previewWorkers || (st && st.error)) return;
+      const L = this.level(), cache = this.chunkCache, lists = this.previewWorkers.map(() => []);
+      for (const [cx, cy] of this.visibleChunks(L)) {
+        const got = cache.get(L + ':' + cx + ',' + cy);
+        if (got && got.last) continue;
+        let h = Math.imul(cx >> 3, 0x9e3779b1) ^ Math.imul(cy >> 3, 0x85ebca6b) ^ L;
+        h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+        lists[((h ^ (h >>> 12)) >>> 0) % lists.length].push([L, cx, cy]);
+      }
+      this.previewWorkers.forEach((w, i) => w.postMessage({ type: 'want', job: this.previewJob, items: lists[i] }));
+    }
+
+    drawView() {
+      const c = this.previewCanvas, size = this.canvasSize();
+      if (!size) return;
+      if (c.width !== size[0] || c.height !== size[1]) { c.width = size[0]; c.height = size[1]; }
+      const ctx = c.getContext('2d'), v = this.view, L = this.level();
+      ctx.imageSmoothingEnabled = false;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, size[0], size[1]);
+      if (!this.chunkCache) return;
+      // Map tile (tx, ty) is at device pixel ((tx - x0) / z, (ty - y0) / z).
+      const x0 = v.x - (size[0] >> 1) * v.z, y0 = v.y - (size[1] >> 1) * v.z;
+      const span = 32 * L, d = span / v.z;
+      for (const [cx, cy] of this.visibleChunks(L)) {
+        const dx = (cx * span - x0) / v.z, dy = (cy * span - y0) / v.z;
+        const got = this.chunkCache.get(L + ':' + cx + ',' + cy);
+        if (got) { ctx.drawImage(got.img, Math.round(dx), Math.round(dy), Math.round(dx + d) - Math.round(dx), Math.round(dy + d) - Math.round(dy)); continue; }
+        // A coarser level's chunk that covers it, scaled up.
+        for (let M = L * 2; M <= MAX_ZOOM; M *= 2) {
+          const f = M / L, pcx = Math.floor(cx / f), pcy = Math.floor(cy / f);
+          const up = this.chunkCache.get(M + ':' + pcx + ',' + pcy);
+          if (!up) continue;
+          const s = 32 / f, sx = (cx - pcx * f) * s, sy = (cy - pcy * f) * s;
+          ctx.drawImage(up.img, sx, sy, s, s, Math.round(dx), Math.round(dy), Math.round(dx + d) - Math.round(dx), Math.round(dy + d) - Math.round(dy));
+          break;
+        }
+      }
     }
 
     // Resizing, browser zoom and moving to a screen with another scale all
     // change the device pixel ratio; not all of them fire a resize.
     watchPixelRatio() {
       if (this.previewWatch || this.destroyed) return;
-      const resize = () => requestAnimationFrame(() => this.sizePreviewCanvas(true));
+      const resize = () => this.viewChanged();
       let mq = null;
       const listen = () => {
         if (mq) mq.removeEventListener('change', onRatio);
@@ -490,39 +585,70 @@
       this.previewWorkers = null;
       if (this.previewWatch) this.previewWatch();
       this.previewWatch = null;
+      if (this.previewResize) this.previewResize.disconnect();
       if (this.tooltip) this.tooltip.remove();
     }
 
-    // Drag the map around, as in the game.
-    dragToScroll(frame) {
-      let drag = null;
+    // Drag to move the map, the wheel or a pinch to zoom, keys too.
+    panAndZoom(frame) {
+      const pointers = new Map();
+      let pinch = 0;
+      // A pointer's position in device pixels of the preview.
+      const at = (e) => {
+        const r = this.previewCanvas.getBoundingClientRect(), c = this.previewCanvas;
+        return [(e.clientX - r.left) / r.width * c.width, (e.clientY - r.top) / r.height * c.height];
+      };
       frame.addEventListener('pointerdown', (e) => {
         if (e.button !== 0 || e.target !== this.previewCanvas) return;
-        drag = { x: e.clientX, y: e.clientY, l: frame.scrollLeft, t: frame.scrollTop, id: e.pointerId };
+        pointers.set(e.pointerId, at(e));
         frame.setPointerCapture(e.pointerId);
         frame.classList.add('fmg-dragging');
+        if (pointers.size === 2) { const [a, b] = [...pointers.values()]; pinch = Math.hypot(a[0] - b[0], a[1] - b[1]); }
+        frame.focus({ preventScroll: true });
         e.preventDefault();
       });
       frame.addEventListener('pointermove', (e) => {
-        if (!drag || e.pointerId !== drag.id) return;
-        const z = parseFloat(this.root.style.zoom) || 1;
-        frame.scrollLeft = drag.l - (e.clientX - drag.x) / z;
-        frame.scrollTop = drag.t - (e.clientY - drag.y) / z;
+        const was = pointers.get(e.pointerId);
+        if (!was) return;
+        const now = at(e);
+        pointers.set(e.pointerId, now);
+        if (pointers.size === 1) {
+          this.view.x -= (now[0] - was[0]) * this.view.z;
+          this.view.y -= (now[1] - was[1]) * this.view.z;
+          this.viewChanged();
+        } else if (pointers.size === 2) {
+          const [a, b] = [...pointers.values()], dist = Math.hypot(a[0] - b[0], a[1] - b[1]);
+          // Half the move pans, the change in spread zooms about the middle.
+          this.view.x -= (now[0] - was[0]) / 2 * this.view.z;
+          this.view.y -= (now[1] - was[1]) / 2 * this.view.z;
+          if (pinch > 0 && dist > 0) this.zoomView(pinch / dist, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+          pinch = dist;
+          this.viewChanged();
+        }
       });
       const end = (e) => {
-        if (!drag || e.pointerId !== drag.id) return;
-        drag = null;
-        frame.classList.remove('fmg-dragging');
+        if (!pointers.delete(e.pointerId)) return;
+        pinch = 0;
+        if (!pointers.size) frame.classList.remove('fmg-dragging');
       };
       frame.addEventListener('pointerup', end);
       frame.addEventListener('pointercancel', end);
-      // Remember the map point in the middle of the view; it starts at the
-      // spawn and is put back after re-renders by sizePreviewCanvas.
-      frame.addEventListener('scroll', () => {
-        const c = this.previewCanvas, at = this.previewPlaced;
-        if (!frame.isConnected || !c.offsetWidth) return;
-        if (at && (frame.clientWidth !== at[2] || frame.clientHeight !== at[3] || (frame.scrollLeft === at[0] && frame.scrollTop === at[1]))) return;
-        this.previewCentre = [(frame.scrollLeft + frame.clientWidth / 2) / c.offsetWidth, (frame.scrollTop + frame.clientHeight / 2) / c.offsetHeight];
+      frame.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const p = at(e), dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+        this.zoomView(Math.pow(2, dy / 250), p[0], p[1]);
+      }, { passive: false });
+      frame.addEventListener('dblclick', (e) => { const p = at(e); this.zoomView(0.5, p[0], p[1]); });
+      frame.addEventListener('keydown', (e) => {
+        const step = 64 * Math.max(1, (window.devicePixelRatio || 1)) * this.view.z;
+        const keys = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+        if (keys[e.key]) { this.view.x += keys[e.key][0]; this.view.y += keys[e.key][1]; this.viewChanged(); }
+        else if (e.key === '+' || e.key === '=') this.zoomView(0.5);
+        else if (e.key === '-' || e.key === '_') this.zoomView(2);
+        else if (e.key === 'Home') { this.view = { x: 0, y: 0, z: 1 }; this.viewChanged(); }
+        else return;
+        e.preventDefault();
+        e.stopPropagation();
       });
     }
 
@@ -541,7 +667,7 @@
     workers() {
       if (this.previewWorkers) return this.previewWorkers;
       const n = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
-      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=10';
+      const url = this.opts.workerUrl || ICON_BASE.replace(/icons\/$/, '') + 'mapgen-worker.js?v=11';
       this.previewWorkers = [];
       for (let i = 0; i < n; i++) {
         const w = new Worker(url);
@@ -552,44 +678,40 @@
       return this.previewWorkers;
     }
 
+    // New settings: start again with an empty map, where the view is.
     loadPreview(force) {
       const st = this.previewState;
       const key = this.previewKey();
       if (!force && key === st.key) return;
       st.key = key; st.error = '';
       const job = (this.previewJob = (this.previewJob || 0) + 1);
-      const ctx = this.previewCanvas.getContext('2d');
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, PREVIEW_SIZE, PREVIEW_SIZE);
+      this.chunkCache = new Map();
       let workers;
       try { workers = this.workers(); } catch (e) { st.error = String(e.message || e); this.updatePreviewView(); return; }
-      // Chunks nearest the middle first. Each worker takes an equal wedge
-      // around the middle, so all of them work outwards together and most
-      // of a chunk's neighbours, whose tiles its entities need, are its own
-      // worker's.
-      const half = PREVIEW_SIZE / 32 / 2, all = [];
-      for (let cy = -half; cy < half; cy++) for (let cx = -half; cx < half; cx++) all.push([cx, cy]);
-      const ring = (c) => Math.max(Math.abs(c[0] + 0.5), Math.abs(c[1] + 0.5));
-      const angle = (c) => Math.atan2(c[1] + 0.5, c[0] + 0.5);
-      all.sort((a, b) => ring(a) - ring(b) || angle(a) - angle(b));
-      const owner = new Map();
-      all.slice().sort((a, b) => angle(a) - angle(b)).forEach((c, i) => owner.set(c, Math.floor(i * workers.length / all.length)));
       const mgs = this.result().mapGenSettings;
-      workers.forEach((w, i) => w.postMessage({
-        type: 'start', job, modset: this.modset, planet: this.previewPlanet || 'nauvis', mgs, scale: 1,
-        chunks: all.filter((c) => owner.get(c) === i),
-      }));
+      workers.forEach((w) => w.postMessage({ type: 'config', job, modset: this.modset, planet: this.previewPlanet || 'nauvis', mgs }));
       this.updatePreviewView();
+      this.viewChanged();
     }
 
     onPreviewMessage(m) {
       if (this.destroyed || m.job !== this.previewJob) return;
       if (m.type === 'chunk') {
-        const ctx = this.previewCanvas.getContext('2d');
-        const half = PREVIEW_SIZE / 2;
-        ctx.putImageData(new ImageData(new Uint8ClampedArray(m.pixels.buffer), m.w, m.h), half + m.cx * 32, half + m.cy * 32);
+        const cache = this.chunkCache, key = m.level + ':' + m.cx + ',' + m.cy;
+        const img = document.createElement('canvas');
+        img.width = m.w; img.height = m.h;
+        img.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(m.pixels.buffer), m.w, m.h), 0, 0);
+        cache.delete(key);
+        cache.set(key, { img, last: m.last });
+        // The oldest go first.
+        if (cache.size > MAX_CACHED) {
+          const it = cache.keys();
+          for (let d = cache.size - MAX_CACHED; d > 0; d--) cache.delete(it.next().value);
+        }
+        if (!this.drawPending) {
+          this.drawPending = requestAnimationFrame(() => { this.drawPending = 0; this.drawView(); });
+        }
       } else if (m.type === 'error') {
-        this.previewWorkers.forEach((w) => w.postMessage({ type: 'stop', job: m.job }));
         this.previewFailed(m.message);
       }
     }

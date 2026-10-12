@@ -11,6 +11,8 @@
   'use strict';
 
   var CHUNK = 32;
+  // The furthest out (tiles per pixel) the overview still shows ore.
+  var ORE_SCALE = 16;
   var BLACK = [0, 0, 0];
 
   // CliffOrientation, in the game's order.
@@ -97,8 +99,13 @@
     });
     var colors = tiles.map(function (t) { return data.tile[t].color; });
 
+    // Zoomed out (each pixel scale tiles apart) the preview is an overview:
+    // tiles and ore at sample points, no other entities and no cliffs.
+    // Further out than ORE_SCALE, a patch would be a pixel or less, and the
+    // spot noise behind ore would cost far more than the tiles: tiles only.
+    var overview = scale > 1;
     var ents = previewEntities(data, ps).filter(function (e) {
-      return controlSize(ps.mgs, e.def.autoplace.control) > 0;
+      return controlSize(ps.mgs, e.def.autoplace.control) > 0 && (!overview || (e.kind === 'resource' && scale <= ORE_SCALE));
     });
     var tileSets = tiles.map(function (t) { return new Set(data.tile[t].layers || []); });
     var outs = [], patterns = new Map();
@@ -143,7 +150,7 @@
     var chunkProg = N.compile(data, ps.mgs, tileOuts.concat(outs));
     var tileProg = outs.length ? new N.Program(chunkProg.builder, chunkProg.outputs.slice(0, tiles.length)) : chunkProg;
     var entities0 = outs.length ? tiles.length : -1;
-    var cliffs = cliffPlacer(data, planet, ps);
+    var cliffs = overview ? null : cliffPlacer(data, planet, ps);
     var tree = (data.chart && data.chart.tree) || [48, 99, 48, 102];
     var enemy = (data.chart && data.chart.enemy) || [255, 25, 25, 255];
     ents.forEach(function (e) { if (e.kind === 'tree') e.color = tree; else if (e.kind === 'enemy') e.color = enemy; });
@@ -456,6 +463,7 @@
       return {
         // Pass 0 has been through the chunk.
         note: function (cx, cy) { pending.set(cx + ',' + cy, [cx, cy]); },
+        trim: function (max) { trim(pending, max); trim(lattice, max); },
         place: function (cx, cy, tl) {
           var r = latticeAt(cx, cy), el = r[0], cl = r[1], i, j;
           if (smooth !== 0) el = smoothed(el, w, hgt, smooth);
@@ -602,9 +610,55 @@
       };
     }
 
+    // The overview's chunk: each pixel the tile at its sample point, and
+    // where a resource would very likely be placed there (the most probable
+    // of each group, as place() picks, with a probability of at least a
+    // half and positive richness) its map colour. (The full preview draws
+    // ore on alternate 2x2 squares; here a patch is only a few pixels.)
+    function overviewChunk(cx, cy) {
+      var p = positions(cx, cy), n = CHUNK * CHUNK;
+      var r = chunkProg.run(p[0], p[1], null), px = new Uint8ClampedArray(n * 4), ids = new Int16Array(n).fill(-1);
+      var best = new Float32Array(n).fill(-Infinity), k, t;
+      for (t = 0; t < tiles.length; t++) {
+        var rt = r[t];
+        for (k = 0; k < n; k++) if (rt[k] > best[k]) { best[k] = rt[k]; ids[k] = t; }
+      }
+      for (k = 0; k < n; k++) {
+        var c = ids[k] >= 0 ? colors[ids[k]] : BLACK;
+        px[k * 4] = c[0]; px[k * 4 + 1] = c[1]; px[k * 4 + 2] = c[2]; px[k * 4 + 3] = 255;
+      }
+      for (var g = 0; g < groups.length; g++) {
+        var grp = groups[g];
+        for (k = 0; k < n; k++) {
+          var tile = ids[k] < 0 ? 0 : ids[k], bp = -Infinity, br = 0, be = null;
+          for (var q = 0; q < grp.length; q++) {
+            var e = grp[q];
+            if (e.blockedBy[tile]) continue;
+            var v = r[entities0 + e.p][k], rv = r[entities0 + e.r][k];
+            if (v > bp || (v === bp && rv > br)) { bp = v; br = rv; be = e; }
+          }
+          if (!be || !(bp >= 0.5) || !(br > 0)) continue;
+          blend(px, k, be.def.color, 255);
+        }
+      }
+      return px;
+    }
+
+    // Long sessions of panning visit unbounded numbers of chunks: keep only
+    // the most recent of what pass 0 leaves for pass 1.
+    function trim(map, max) {
+      if (map.size <= max) return;
+      var it = map.keys();
+      for (var d = map.size - max; d > 0; d--) map.delete(it.next().value);
+    }
+
+    if (overview) {
+      return { passes: 1, overview: true, render: function (pass, cx, cy) { return overviewChunk(cx, cy); }, trim: function () {} };
+    }
     return {
       passes: entities0 >= 0 || cliffs ? 2 : 1,
       render: function (pass, cx, cy, prev) { return pass === 0 ? terrain(cx, cy) : entities(cx, cy, prev); },
+      trim: function (max) { trim(chunkTiles, max); trim(chunkDraws, max); if (cliffs) cliffs.trim(max); },
       _cliffs: function (cx, cy) { return cliffs ? cliffs.place(cx, cy, tileLayers(cx, cy)) : []; },
       _tiles: function (cx, cy) { return tileLayers(cx, cy); },
       _placed: function (cx, cy) { return entities0 >= 0 ? placedAt(cx, cy, tileLayers(cx, cy)) : []; },
