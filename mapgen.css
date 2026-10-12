@@ -81,7 +81,9 @@
   color: var(--heading); background: var(--shallow); height: 35px;
   box-shadow: inset 0 1px 0 #5a595a, inset 1px 0 0 #4a494a, inset -1px 0 0 #2a2a2a, 0 0 0 1px #191919;
 }
-.fmg-tabpanel { background: var(--shallow); padding: 11px 8px 8px; height: min(884px, max(380px, calc(100vh - 330px))); overflow-y: auto; overflow-x: hidden; }
+/* 333px = the window around the panel (285px) plus the overlay's padding (48px), so
+   the whole window fits the screen without the overlay scrolling. */
+.fmg-tabpanel { background: var(--shallow); padding: 11px 8px 8px; height: min(884px, max(240px, calc(100vh - 333px))); overflow-y: auto; overflow-x: hidden; }
 .fmg-tabpanel::-webkit-scrollbar { width: 12px; }
 .fmg-tabpanel::-webkit-scrollbar-track { background: #242324; }
 .fmg-tabpanel::-webkit-scrollbar-thumb { background: #8e8e8e; border: 2px solid #242324; border-radius: 2px; }
@@ -278,10 +280,9 @@
 .fmg-preview .fmg-subheader { gap: 8px; }
 .fmg-preview .fmg-check { color: #fff; margin-right: 6px; }
 .fmg-preview-frame { position: relative; flex: 1 1 0; min-height: 0; overflow: auto; background: #0f0f0f; box-shadow: inset 0 0 0 1px #000; }
-.fmg-preview-frame::-webkit-scrollbar { width: 12px; height: 12px; }
-.fmg-preview-frame::-webkit-scrollbar-track { background: #242324; }
-.fmg-preview-frame::-webkit-scrollbar-thumb { background: #8e8e8e; border: 2px solid #242324; border-radius: 2px; }
-.fmg-preview-frame::-webkit-scrollbar-corner { background: #242324; }
+/* The map pans by dragging (or the wheel), as in the game, so no scrollbars. */
+.fmg-preview-frame { scrollbar-width: none; }
+.fmg-preview-frame::-webkit-scrollbar { display: none; }
 .fmg-preview-canvas { display: block; width: 1024px; height: 1024px; max-width: none; image-rendering: pixelated; cursor: grab; touch-action: none; }
 .fmg-preview-frame.fmg-dragging .fmg-preview-canvas { cursor: grabbing; }
 .fmg-preview-status { position: absolute; left: 0; right: 0; top: 45%; text-align: center; padding: 0 24px; white-space: pre-line; color: #fff; text-shadow: 0 1px 2px #000; }
