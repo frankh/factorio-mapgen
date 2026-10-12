@@ -444,8 +444,8 @@
         this.tip(b, label);
         return b;
       };
-      const home = el('button', { class: 'fmg-btn fmg-zoom-home', type: 'button', onclick: () => { this.view = { x: 0, y: 0, z: 1 }; this.viewChanged(); } }, 'Spawn');
-      this.tip(home, 'Back to the spawn, one tile a pixel');
+      const home = el('button', { class: 'fmg-btn fmg-zoom-home', type: 'button', onclick: () => this.centerView() }, 'Center');
+      this.tip(home, 'Back to the middle of the map');
       const frame = el('div', { class: 'fmg-preview-frame', tabindex: 0 }, this.previewCanvas, status);
       this.panAndZoom(frame);
       if (this.previewResize) this.previewResize.disconnect();
@@ -506,6 +506,12 @@
         this.drawView();
         this.requestSoon();
       });
+    }
+
+    // Back to the middle of the map, at the same zoom.
+    centerView() {
+      this.view.x = 0; this.view.y = 0;
+      this.viewChanged();
     }
 
     // Zoom a step out (dir 1) or in (-1), keeping the map point at (px, py)
@@ -761,7 +767,7 @@
         if (keys[e.key]) { this.view.x += keys[e.key][0]; this.view.y += keys[e.key][1]; this.viewChanged(); }
         else if (e.key === '+' || e.key === '=') this.zoomView(-1);
         else if (e.key === '-' || e.key === '_') this.zoomView(1);
-        else if (e.key === 'Home') { this.view = { x: 0, y: 0, z: 1 }; this.viewChanged(); }
+        else if (e.key === 'Home') this.centerView();
         else return;
         e.preventDefault();
         e.stopPropagation();
