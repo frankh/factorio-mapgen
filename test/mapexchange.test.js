@@ -37,6 +37,25 @@ test('decoded values match helpers.parse_map_exchange_string', () => {
   }
 });
 
+test('1.1 strings decode to what 2.0 parses them as', () => {
+  for (const { string, parsed } of fx.game_parse_1_1) {
+    const d = MX.decode(string);
+    assert.ok(same({ map_gen_settings: d.map_gen_settings, map_settings: d.map_settings }, parsed), string.slice(0, 40));
+  }
+});
+
+test('a 1.1.61 string from a user imports and re-exports as a 2.0 string', () => {
+  // This string failed with "Map exchange string is truncated" when the
+  // codec only knew the 2.0 layout; the game imports it fine.
+  const { string, parsed } = fx.game_parse_1_1[0];
+  const d = MX.decode(string);
+  assert.deepStrictEqual(d.imported_from, [1, 1, 61, 0]);
+  assert.deepStrictEqual(d._raw.version, MX.DEFAULT_RAW.version);
+  assert.deepStrictEqual(d.map_gen_settings.autoplace_controls.water, { frequency: 0.6666666865348816, size: 6, richness: 1 });
+  const again = MX.decode(MX.encode(d));
+  assert.ok(same({ map_gen_settings: again.map_gen_settings, map_settings: again.map_settings }, parsed));
+});
+
 test('encoding settings gives the string the game makes from the same settings', () => {
   for (const { map_gen_settings, map_settings, string } of fx.encode_from_settings_2_0) {
     assert.strictEqual(MX.encode({ map_gen_settings, map_settings }), string);
