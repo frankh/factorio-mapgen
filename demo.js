@@ -1,7 +1,6 @@
 // The standalone map generator page (index.html).
 const data = Object.values(window.FactorioMapGenData)[0];
 const app = document.getElementById('app');
-const out = document.getElementById('out');
 const params = new URLSearchParams(location.search);
 const download = (name, obj) => {
   const a = document.createElement('a');
@@ -20,16 +19,25 @@ const gen = FactorioMapGen.mount(app, {
   data, modset: params.get('modset') || 'space-age', exchangeString: params.get('s') || undefined,
   modsetToggle: true,
   onChange: fit,
-  onBack: () => { out.hidden = true; },
+  // Play shows the result over the window, like the game's own dialogs.
   onPlay: (r) => {
-    out.hidden = false; out.textContent = '';
-    const win = document.createElement('div'); win.className = 'fmg-window';
-    const t = document.createElement('div'); t.className = 'fmg-title'; t.textContent = 'Map exchange string';
-    const pre = document.createElement('pre'); pre.textContent = r.exchangeString;
-    const p = document.createElement('p');
-    p.append('Start a headless server with these: ', download('map-gen-settings.json', r.mapGenSettings), ' ', download('map-settings.json', r.mapSettings));
-    win.append(t, pre, p); out.append(win);
-    out.scrollIntoView({ behavior: 'smooth' });
+    const box = document.createElement('textarea');
+    box.className = 'fmg-textbox'; box.readOnly = true; box.spellcheck = false; box.value = r.exchangeString;
+    const files = document.createElement('p');
+    files.className = 'fmg-files';
+    files.append('Headless server files:', download('map-gen-settings.json', r.mapGenSettings), download('map-settings.json', r.mapSettings));
+    const btn = (cls, text, onclick) => {
+      const b = document.createElement('button');
+      b.className = 'fmg-dialog-btn ' + cls; b.type = 'button'; b.textContent = text; b.onclick = onclick;
+      return b;
+    };
+    const spacer = document.createElement('div'); spacer.className = 'fmg-drag';
+    const m = gen.modal(gen.t('gui', 'map-exchange-string'), [box, files], [
+      btn('fmg-back', gen.t('gui', 'close'), () => m.remove()),
+      spacer,
+      btn('', gen.t('gui', 'copy'), () => { box.select(); (navigator.clipboard ? navigator.clipboard.writeText(r.exchangeString) : Promise.reject()).catch(() => document.execCommand('copy')); }),
+    ]);
+    box.focus(); box.select();
   },
 });
 fit(gen);
